@@ -1,0 +1,3 @@
+name,email,password,phone_number,service_name,state_name,verified_status,documents_uploaded,subscription_plan_name,subscription_active
+Alice Pro,alice@pro.com,pro123,1112223333,Plumbing,Brooklyn,true,true,Starter,true
+Bob Pro,bob@pro.com,pro123,4445556666,Plumbing,Brooklyn,true,true,Starter,true

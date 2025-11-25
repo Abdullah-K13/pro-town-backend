@@ -1,0 +1,2 @@
+first_name,last_name,address,phone_number,email,password,city,state,zip_code,email_notifications,sms_notifications
+Jane,Doe,123 Main St,7778889999,customer@protown.com,customer123,Brooklyn,NY,11201,true,true

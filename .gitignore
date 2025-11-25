@@ -1,0 +1,42 @@
+# --- Environments & Secrets (Crucial) ---
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Environment Variables (Never commit these!)
+.env
+.env.local
+.env.*.local
+
+# --- Python Internals ---
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# --- FastAPI / Database Specifics ---
+# SQLite databases (common for local dev)
+*.db
+*.sqlite3
+
+# --- Testing & Coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- IDE & OS Settings ---
+# VS Code
+.vscode/
+
+# PyCharm / IntelliJ
+.idea/
+
+# MacOS
+.DS_Store
