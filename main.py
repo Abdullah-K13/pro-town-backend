@@ -10,6 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 origins = [
     "http://localhost:8080",   # your frontend
     "http://127.0.0.1:8080",
+    "https://protownnetwork.com",
+    "https://www.protownnetwork.com",
+    "https://api.protownnetwork.com",
     # add others if you use them:
     # "http://localhost:5173",  # Vite default
     # "http://localhost:3000",  # Next.js/CRA
