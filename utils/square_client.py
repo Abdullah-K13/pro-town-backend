@@ -857,96 +857,6 @@ def create_square_customer(
         }
 
 
-def update_square_customer(
-    customer_id: str,
-    given_name: Optional[str] = None,
-    family_name: Optional[str] = None,
-    email: Optional[str] = None,
-    phone_number: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Update an existing Square customer.
-    
-    Args:
-        customer_id: Square customer ID
-        given_name: Customer's first name
-        family_name: Customer's last name
-        email: Customer's email address
-        phone_number: Optional phone number
-    
-    Returns:
-        Dict with updated customer data
-    """
-    try:
-        url = f"{get_square_base_url()}/v2/customers/{customer_id}"
-        headers = get_square_headers()
-        
-        payload = {}
-        if given_name:
-            payload["given_name"] = given_name
-        if family_name:
-            payload["family_name"] = family_name
-        if email:
-            payload["email_address"] = email
-        if phone_number:
-            payload["phone_number"] = phone_number
-            
-        if not payload:
-            return {"success": True, "message": "No updates provided"}
-        
-        response = requests.put(url, json=payload, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            error_text = response.text
-            logger.error(f"Square Update Customer API error: {response.status_code} - {error_text}")
-            try:
-                error_data = response.json()
-                errors = error_data.get("errors", [])
-                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
-                return {
-                    "success": False,
-                    "error": ', '.join(error_messages),
-                    "customer": None,
-                    "http_status": response.status_code
-                }
-            except:
-                return {
-                    "success": False,
-                    "error": error_text,
-                    "customer": None,
-                    "http_status": response.status_code
-                }
-        
-        data = response.json()
-        
-        if data.get("errors"):
-            errors = data.get("errors", [])
-            error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
-            return {
-                "success": False,
-                "error": ', '.join(error_messages),
-                "customer": None,
-                "errors": errors
-            }
-        
-        customer = data.get("customer", {})
-        
-        return {
-            "success": True,
-            "customer": customer,
-            "customer_id": customer.get("id"),
-            "errors": []
-        }
-        
-    except Exception as e:
-        logger.error(f"Error updating Square customer: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "customer": None
-        }
-
-
 def get_square_customer_by_email(email: str) -> Dict[str, Any]:
     """
     Search for a Square customer by email.
@@ -1416,3 +1326,138 @@ def get_catalog_items() -> Dict[str, Any]:
             "item_variations": []
         }
 
+
+def cancel_subscription(subscription_id: str) -> Dict[str, Any]:
+    """
+    Cancel a subscription in Square.
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}/cancel"
+        headers = get_square_headers()
+        
+        response = requests.post(url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            error_text = response.text
+            logger.error(f"Square Cancel Subscription API error: {response.status_code} - {error_text}")
+            try:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+                return {
+                    "success": False,
+                    "error": ', '.join(error_messages),
+                    "http_status": response.status_code
+                }
+            except:
+                return {
+                    "success": False,
+                    "error": error_text,
+                    "http_status": response.status_code
+                }
+        
+        data = response.json()
+        
+        if "subscription" in data:
+            subscription = data["subscription"]
+            return {
+                "success": True,
+                "subscription": subscription,
+                "status": subscription.get("status")
+            }
+        else:
+            errors = data.get("errors", [])
+            error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+            return {
+                "success": False,
+                "error": ', '.join(error_messages)
+            }
+            
+    except Exception as e:
+        logger.error(f"Error canceling subscription: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def update_subscription(subscription_id: str, plan_variation_id: str) -> Dict[str, Any]:
+    """
+    Update a subscription plan in Square.
+    """
+    try:
+        # First get the current subscription to get the version
+        get_url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}"
+        headers = get_square_headers()
+        
+        get_response = requests.get(get_url, headers=headers, timeout=10)
+        if get_response.status_code != 200:
+            return {
+                "success": False,
+                "error": "Failed to fetch subscription details",
+                "http_status": get_response.status_code
+            }
+            
+        current_subscription = get_response.json().get("subscription", {})
+        version = current_subscription.get("version")
+        
+        if not version:
+            return {
+                "success": False,
+                "error": "Could not determine subscription version"
+            }
+            
+        # Now update the subscription
+        url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}"
+        
+        payload = {
+            "subscription": {
+                "version": version,
+                "plan_variation_id": plan_variation_id
+            }
+        }
+        
+        response = requests.put(url, json=payload, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            error_text = response.text
+            logger.error(f"Square Update Subscription API error: {response.status_code} - {error_text}")
+            try:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+                return {
+                    "success": False,
+                    "error": ', '.join(error_messages),
+                    "http_status": response.status_code
+                }
+            except:
+                return {
+                    "success": False,
+                    "error": error_text,
+                    "http_status": response.status_code
+                }
+        
+        data = response.json()
+        
+        if "subscription" in data:
+            subscription = data["subscription"]
+            return {
+                "success": True,
+                "subscription": subscription,
+                "status": subscription.get("status")
+            }
+        else:
+            errors = data.get("errors", [])
+            error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+            return {
+                "success": False,
+                "error": ', '.join(error_messages)
+            }
+            
+    except Exception as e:
+        logger.error(f"Error updating subscription: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }

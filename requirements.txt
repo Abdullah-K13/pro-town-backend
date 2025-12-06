@@ -7,3 +7,6 @@ python-jose[cryptography]
 passlib[bcrypt]
 requests
 squareup
+boto3
+python-multipart
+pydantic[email]

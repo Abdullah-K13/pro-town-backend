@@ -29,4 +29,5 @@ class Professional(Base):
     subscription_active = Column(Boolean, default=False)
     pending_subscription_plan_variation_id = Column(String(255), nullable=True)  # Store Square plan variation ID for later activation
     square_customer_id = Column(String(255), nullable=True)  # Store Square customer ID
+    square_subscription_id = Column(String(255), nullable=True)  # Store Square subscription ID
     created_at = Column(TIMESTAMP, server_default=text("NOW()"))
