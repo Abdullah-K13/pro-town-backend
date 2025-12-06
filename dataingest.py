@@ -245,8 +245,18 @@ def seed_admins(db: Session, n=NUM_ADMINS) -> List[Admin]:
     return admins
 
 
-def seed_customers(db: Session, n=NUM_CUSTOMERS) -> List[Customer]:
+def seed_customers(db: Session, n=NUM_CUSTOMERS, professionals: Optional[List[Professional]] = None) -> List[Customer]:
     customers: List[Customer] = []
+    
+    # Get professionals for referrals (use provided list or query from DB)
+    pros_for_referral = professionals
+    if pros_for_referral is None:
+        pros_for_referral = db.query(Professional).all()
+    
+    # Only assign referrals if we have professionals available
+    # About 30% of customers will be referred by a professional
+    referral_probability = 0.3 if pros_for_referral else 0.0
+    
     for _ in range(max(0, n)):
         first = faker.first_name()
         last = faker.last_name()
@@ -261,6 +271,11 @@ def seed_customers(db: Session, n=NUM_CUSTOMERS) -> List[Customer]:
         # Notification prefs
         email_n = _bool_biased(0.85)
         sms_n = _bool_biased(0.7)
+        
+        # Randomly assign a referring professional (30% chance)
+        referred_by = None
+        if pros_for_referral and _bool_biased(referral_probability):
+            referred_by = random.choice(pros_for_referral).id
 
         if exists:
             exists.first_name = exists.first_name or first
@@ -277,6 +292,9 @@ def seed_customers(db: Session, n=NUM_CUSTOMERS) -> List[Customer]:
                 exists.sms_notifications = sms_n
             if not exists.password_hash:
                 exists.password_hash = hash_password(DEFAULT_CUSTOMER_PASSWORD)
+            # Only set referred_by if it's not already set (preserve existing referrals)
+            if exists.referred_by is None:
+                exists.referred_by = referred_by
             customers.append(exists)
         else:
             c = Customer(
@@ -291,6 +309,7 @@ def seed_customers(db: Session, n=NUM_CUSTOMERS) -> List[Customer]:
                 zip_code=zipc,
                 email_notifications=email_n,
                 sms_notifications=sms_n,
+                referred_by=referred_by,
             )
             db.add(c)
             customers.append(c)
@@ -546,8 +565,9 @@ def main():
         subs = seed_subscriptions(db)
 
         seed_admins(db, NUM_ADMINS)
-        seed_customers(db, NUM_CUSTOMERS)
-        seed_professionals(db, services, states, cities, subs, NUM_PROFESSIONALS)
+        # Seed professionals before customers so customers can be assigned referrals
+        professionals = seed_professionals(db, services, states, cities, subs, NUM_PROFESSIONALS)
+        seed_customers(db, NUM_CUSTOMERS, professionals=professionals)
 
         scps = seed_service_city_pairs(db, services, cities, PAIR_COVERAGE)
         seed_professional_pairs(db, scps)

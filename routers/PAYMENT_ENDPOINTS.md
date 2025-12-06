@@ -167,15 +167,21 @@ This document outlines all endpoints available in `routers/payment.py` and their
 ---
 
 ### `POST /payments/validate-card`
-**Purpose**: Validate a credit card without saving it or charging it. Only checks if the card is valid.
+**Purpose**: Validate a credit card and save it to a customer. Creates the actual customer if not provided. No charge is made.
 
 **Request Body**:
 ```json
 {
   "source_id": "cnon:card-token-from-square",
-  "customer_id": "optional-square-customer-id"
+  "customer_id": "optional-square-customer-id",
+  "email": "user@example.com",
+  "given_name": "John",
+  "family_name": "Doe",
+  "phone_number": "5551234567"
 }
 ```
+
+**Note**: If `customer_id` is not provided, `email` is **required**. The endpoint will create the actual customer (not temporary) with the provided information.
 
 **Returns**:
 ```json
@@ -194,9 +200,11 @@ This document outlines all endpoints available in `routers/payment.py` and their
 ```
 
 **Notes**: 
-- Creates temporary customer if `customer_id` not provided
+- Creates **actual customer** (not temporary) if `customer_id` not provided
+- **Email is required** if `customer_id` is not provided
+- Customer and card are created in Square and can be reused when creating professional account
 - Square payment tokens are single-use and expire quickly
-- No charge is made
+- No charge is made, but card is saved to customer
 
 ---
 

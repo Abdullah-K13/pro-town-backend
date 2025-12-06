@@ -10,7 +10,24 @@ router = APIRouter()
 
 @router.get("/", dependencies=[Depends(role_required("admins"))])
 def get_all_customers(db: Session = Depends(get_db)):
-    return db.query(Customer).all()
+    from models.professional import Professional
+    # Perform an outer join to get customer and their referrer (if any)
+    results = db.query(Customer, Professional).outerjoin(Professional, Customer.referred_by == Professional.id).all()
+    
+    output = []
+    for cust, prof in results:
+        # Convert customer model to dict
+        data = {c.name: getattr(cust, c.name) for c in cust.__table__.columns}
+        
+        # Add referral info if a professional was found
+        if prof:
+            data["referral_info"] = {
+                "name": prof.name,
+                "business_name": prof.business_name
+            }
+        output.append(data)
+        
+    return output
 
 @router.get("/me", dependencies=[Depends(role_required("customers"))])
 def get_my_customer_profile(
@@ -41,7 +58,20 @@ def get_my_customer_profile(
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
 
-    return customer
+    # Convert to dict to add extra fields
+    customer_data = {c.name: getattr(customer, c.name) for c in customer.__table__.columns}
+    
+    # Add referral info if exists
+    if customer.referred_by:
+        from models.professional import Professional
+        pro = db.query(Professional).filter(Professional.id == customer.referred_by).first()
+        if pro:
+            customer_data["referral_info"] = {
+                "name": pro.name,
+                "business_name": pro.business_name
+            }
+
+    return customer_data
 
 
 @router.get("/{customer_id}")
@@ -74,6 +104,26 @@ def create_customer(data: dict, db: Session = Depends(get_db)):
     # Hash password
     password_hash = hash_password(data.pop("password"))
 
+    # Handle referral token
+    referred_by_id = None
+    referral_token = data.get("referral_token")
+    if referral_token:
+        try:
+            from utils.security import decode_token
+            from models.professional import Professional
+            
+            payload = decode_token(referral_token)
+            if payload and payload.get("type") == "referral":
+                pro_id = payload.get("sub")
+                # Verify professional exists
+                pro = db.query(Professional).filter(Professional.id == int(pro_id)).first()
+                if pro:
+                    referred_by_id = pro.id
+        except Exception as e:
+            # Log error but don't fail signup
+            print(f"Error processing referral token: {e}")
+            pass
+
     # Create customer
     new_c = Customer(
         first_name=data["first_name"],
@@ -81,6 +131,7 @@ def create_customer(data: dict, db: Session = Depends(get_db)):
         email=data["email"],
         password_hash=password_hash,
         phone_number=data.get("phone_number"),
+        referred_by=referred_by_id,
     )
     access_token = create_access_token({"sub": new_c.email, "role": "customers"})
     db.add(new_c)

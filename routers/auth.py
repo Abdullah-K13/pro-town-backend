@@ -158,6 +158,7 @@ def signup(role: str, data: dict, db: Session = Depends(get_db)):
             }
     elif role == "customer":
         data["password_hash"] = hash_password(data.pop("password"))
+        # Ensure referred_by is passed if present in data
         user = Customer(**data)
     else:
         raise HTTPException(400, "Invalid role")
@@ -207,3 +208,5 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 
     token = create_access_token({"sub": user.email, "role": role})
     return {"access_token": token, "token_type": "bearer", "role": role}
+
+    

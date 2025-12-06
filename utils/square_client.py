@@ -146,14 +146,25 @@ def create_card_on_file(source_id: str, customer_id: str, idempotency_key: Optio
             idempotency_key = str(uuid.uuid4())
         
         # Square Cards API format
+        # CRITICAL: customer_id MUST be provided to associate card with customer
+        # According to Square API v2, the format is:
+        # {
+        #   "idempotency_key": "...",
+        #   "source_id": "...",
+        #   "card": {
+        #     "customer_id": "..."
+        #   }
+        # }
         payload = {
             "idempotency_key": idempotency_key,
             "source_id": source_id,
             "card": {
-                "customer_id": customer_id
+                "customer_id": customer_id  # This associates the card with the customer
             }
         }
         
+        logger.info(f"Creating card for customer {customer_id} via Square Cards API")
+        logger.debug(f"Card creation payload: {payload}")
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         
         if response.status_code not in [200, 201]:
@@ -193,13 +204,42 @@ def create_card_on_file(source_id: str, customer_id: str, idempotency_key: Optio
         
         if "card" in data:
             card = data["card"]
+            card_id = card.get("id")
+            # CRITICAL: Verify the card response includes customer_id to confirm it was associated
+            card_customer_id = card.get("customer_id")
+            
+            logger.info(f"Card creation response - card_id: {card_id}, customer_id in response: {card_customer_id}, expected: {customer_id}")
+            
+            # Check if customer_id is missing or wrong
+            if not card_customer_id:
+                logger.error(f"❌ CRITICAL: Card {card_id} was created but has NO customer_id in response!")
+                logger.error(f"   This means the card was NOT associated with customer {customer_id}")
+                logger.error(f"   Full card response: {card}")
+                return {
+                    "success": False,
+                    "error": f"Card created but not associated with customer. Card has no customer_id. Expected customer_id: {customer_id}",
+                    "card_id": None,
+                    "http_status": 200  # API call succeeded but card not associated
+                }
+            
+            if card_customer_id != customer_id:
+                logger.error(f"❌ CRITICAL: Card {card_id} was created for customer {card_customer_id}, but we requested customer {customer_id}!")
+                return {
+                    "success": False,
+                    "error": f"Card created for wrong customer. Expected {customer_id}, got {card_customer_id}",
+                    "card_id": None
+                }
+            
+            logger.info(f"✅ Card {card_id} created and VERIFIED for customer {customer_id}")
+            logger.info(f"   Card details: last_4={card.get('last_4')}, brand={card.get('card_brand')}, customer_id={card_customer_id}")
             return {
                 "success": True,
-                "card_id": card.get("id"),
+                "card_id": card_id,
                 "last_4": card.get("last_4"),
                 "brand": card.get("card_brand"),
                 "exp_month": card.get("exp_month"),
                 "exp_year": card.get("exp_year"),
+                "customer_id": card_customer_id,  # Include in response for verification
                 "card": card
             }
         else:
@@ -622,13 +662,12 @@ def get_subscription_plans() -> Dict[str, Any]:
         }
 
 
-def test_square_connection() -> Dict[str, Any]:
+def get_square_locations() -> Dict[str, Any]:
     """
-    Test if Square API connection is working by calling a simple endpoint.
-    Returns connection status and any errors.
+    Get all locations available to the authorized merchant.
+    Returns list of locations with their IDs.
     """
     try:
-        # Try to get locations - this is a simple endpoint that should work if auth is correct
         url = f"{get_square_base_url()}/v2/locations"
         headers = get_square_headers()
         
@@ -639,19 +678,54 @@ def test_square_connection() -> Dict[str, Any]:
             locations = data.get("locations", [])
             return {
                 "success": True,
-                "message": "Square API connection successful",
-                "locations_count": len(locations),
+                "locations": locations,
                 "location_ids": [loc.get("id") for loc in locations],
-                "environment": SQUARE_ENVIRONMENT
+                "count": len(locations)
             }
         else:
             error_data = response.json() if response.content else {}
             errors = error_data.get("errors", [])
             return {
                 "success": False,
-                "message": "Square API connection failed",
+                "error": ', '.join([e.get("detail", e.get("code", "Unknown error")) for e in errors]),
+                "locations": [],
                 "http_status": response.status_code,
                 "errors": errors
+            }
+            
+    except Exception as e:
+        logger.error(f"Error getting Square locations: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "locations": []
+        }
+
+
+def test_square_connection() -> Dict[str, Any]:
+    """
+    Test if Square API connection is working by calling a simple endpoint.
+    Returns connection status and any errors.
+    """
+    try:
+        # Try to get locations - this is a simple endpoint that should work if auth is correct
+        result = get_square_locations()
+        
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Square API connection successful",
+                "locations_count": result.get("count", 0),
+                "location_ids": result.get("location_ids", []),
+                "environment": SQUARE_ENVIRONMENT
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Square API connection failed",
+                "http_status": result.get("http_status", 500),
+                "errors": result.get("errors", []),
+                "error": result.get("error")
             }
             
     except Exception as e:
@@ -857,6 +931,66 @@ def create_square_customer(
         }
 
 
+def get_square_customer_by_id(customer_id: str) -> Dict[str, Any]:
+    """
+    Get a Square customer by customer ID.
+    
+    Args:
+        customer_id: Square customer ID
+    
+    Returns:
+        Dict with customer data if found
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/customers/{customer_id}"
+        headers = get_square_headers()
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            customer = data.get("customer", {})
+            if customer:
+                return {
+                    "success": True,
+                    "customer": customer,
+                    "customer_id": customer.get("id")
+                }
+            return {
+                "success": False,
+                "error": "Customer not found",
+                "customer": None
+            }
+        else:
+            error_text = response.text
+            logger.error(f"Square Get Customer API error: {response.status_code} - {error_text}")
+            try:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+                return {
+                    "success": False,
+                    "error": ', '.join(error_messages),
+                    "customer": None,
+                    "http_status": response.status_code
+                }
+            except:
+                return {
+                    "success": False,
+                    "error": error_text,
+                    "customer": None,
+                    "http_status": response.status_code
+                }
+            
+    except Exception as e:
+        logger.error(f"Error getting Square customer: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "customer": None
+        }
+
+
 def get_square_customer_by_email(email: str) -> Dict[str, Any]:
     """
     Search for a Square customer by email.
@@ -909,6 +1043,181 @@ def get_square_customer_by_email(email: str) -> Dict[str, Any]:
             
     except Exception as e:
         logger.error(f"Error searching Square customer: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "customer": None
+        }
+
+
+def get_customer_cards(customer_id: str) -> Dict[str, Any]:
+    """
+    Get all cards associated with a Square customer.
+    Uses the Search API to find cards by customer ID.
+    
+    Args:
+        customer_id: Square customer ID
+    
+    Returns:
+        Dict with list of cards
+    """
+    try:
+        # Try the newer Cards Search API first
+        url = f"{get_square_base_url()}/v2/cards/search"
+        headers = get_square_headers()
+        
+        # Square Cards Search API format
+        payload = {
+            "query": {
+                "filter": {
+                    "customer_id": {
+                        "exact": customer_id
+                    }
+                }
+            }
+        }
+        
+        logger.info(f"Searching for cards for customer {customer_id}")
+        logger.debug(f"Cards search payload: {payload}")
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        if response.status_code not in [200, 201]:
+            error_text = response.text
+            logger.error(f"Square Get Customer Cards API error: {response.status_code} - {error_text}")
+            try:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+                return {
+                    "success": False,
+                    "error": ', '.join(error_messages),
+                    "cards": [],
+                    "http_status": response.status_code
+                }
+            except:
+                return {
+                    "success": False,
+                    "error": error_text,
+                    "cards": [],
+                    "http_status": response.status_code
+                }
+        
+        data = response.json()
+        
+        if data.get("errors"):
+            errors = data.get("errors", [])
+            error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+            return {
+                "success": False,
+                "error": ', '.join(error_messages),
+                "cards": [],
+                "errors": errors
+            }
+        
+        # Cards Search API returns cards in the response
+        cards = data.get("cards", [])
+        
+        return {
+            "success": True,
+            "cards": cards,
+            "count": len(cards),
+            "errors": data.get("errors", [])
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting customer cards: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cards": []
+        }
+
+
+def update_square_customer(
+    customer_id: str,
+    given_name: Optional[str] = None,
+    family_name: Optional[str] = None,
+    email: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    address: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Update a customer in Square.
+    
+    Args:
+        customer_id: Square customer ID to update
+        given_name: Customer's first name
+        family_name: Customer's last name
+        email: Customer's email address
+        phone_number: Optional phone number
+        address: Optional address dict
+    
+    Returns:
+        Dict with updated customer data
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/customers/{customer_id}"
+        headers = get_square_headers()
+        
+        payload = {}
+        
+        if given_name is not None:
+            payload["given_name"] = given_name
+        if family_name is not None:
+            payload["family_name"] = family_name
+        if email is not None:
+            payload["email_address"] = email
+        if phone_number is not None:
+            payload["phone_number"] = phone_number
+        if address is not None:
+            payload["address"] = address
+        
+        response = requests.put(url, json=payload, headers=headers, timeout=10)
+        
+        if response.status_code not in [200, 201]:
+            error_text = response.text
+            logger.error(f"Square Update Customer API error: {response.status_code} - {error_text}")
+            try:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+                return {
+                    "success": False,
+                    "error": ', '.join(error_messages),
+                    "customer": None,
+                    "http_status": response.status_code
+                }
+            except:
+                return {
+                    "success": False,
+                    "error": error_text,
+                    "customer": None,
+                    "http_status": response.status_code
+                }
+        
+        data = response.json()
+        
+        if data.get("errors"):
+            errors = data.get("errors", [])
+            error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+            return {
+                "success": False,
+                "error": ', '.join(error_messages),
+                "customer": None,
+                "errors": errors
+            }
+        
+        customer = data.get("customer", {})
+        
+        return {
+            "success": True,
+            "customer": customer,
+            "customer_id": customer.get("id"),
+            "errors": data.get("errors", [])
+        }
+        
+    except Exception as e:
+        logger.error(f"Error updating Square customer: {str(e)}")
         return {
             "success": False,
             "error": str(e),

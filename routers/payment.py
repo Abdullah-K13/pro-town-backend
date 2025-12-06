@@ -60,6 +60,11 @@ class SavePaymentMethodRequest(BaseModel):
 class ValidateCardRequest(BaseModel):
     source_id: str  # Payment token from Square Web Payments SDK
     customer_id: Optional[str] = None  # Optional Square customer ID (will create one if not provided)
+    # Customer information for creating actual customer (not temporary)
+    given_name: Optional[str] = None  # First name for customer creation
+    family_name: Optional[str] = None  # Last name for customer creation
+    email: Optional[str] = None  # Email for customer creation
+    phone_number: Optional[str] = None  # Phone for customer creation
 
 
 class SetDefaultMethodRequest(BaseModel):
@@ -936,12 +941,16 @@ def validate_card(
     """
     Validate a credit card without saving it or charging it.
     This endpoint only checks if the card is valid and returns card details.
-    No charge is made, and the card is not saved.
+    No charge is made, but the card IS saved to the customer in Square.
     
     Request Body:
     {
       "source_id": "cnon:card-token-from-square",
-      "customer_id": "optional-square-customer-id"  // Optional, will create temp customer if not provided
+      "customer_id": "optional-square-customer-id",  // Optional, will create actual customer if not provided
+      "email": "user@example.com",  // Required if customer_id not provided
+      "given_name": "John",  // Optional, for customer creation
+      "family_name": "Doe",  // Optional, for customer creation
+      "phone_number": "5551234567"  // Optional, for customer creation
     }
     
     Returns:
@@ -959,26 +968,41 @@ def validate_card(
     No authentication required (public endpoint for card validation).
     """
     try:
-        # If customer_id not provided, create a temporary customer for validation
-        # Square requires a customer_id to validate cards
+        # If customer_id not provided, create the ACTUAL customer with provided information
+        # Square requires a customer_id to create a card on file (which validates the card)
         customer_id = request.customer_id
         
         if not customer_id:
-            # Create a temporary customer for validation purposes
-            temp_customer_result = create_square_customer(
-                given_name="Validation",
-                family_name="User",
-                email="validation@temp.com"
-            )
+            # Create the actual customer with provided information (not temporary)
+            # This customer will be reused when creating the professional account
+            from utils.square_client import create_square_customer
             
-            if not temp_customer_result.get("success"):
+            # Validate that we have required information to create customer
+            if not request.email:
                 return {
                     "valid": False,
-                    "error": temp_customer_result.get("error", "Failed to create temporary customer"),
-                    "message": "Card validation failed: Could not create temporary customer for validation."
+                    "error": "email is required when customer_id is not provided",
+                    "message": "Card validation failed: Email is required to create customer. Please provide email in the request."
                 }
             
-            customer_id = temp_customer_result.get("customer_id")
+            # Create actual customer with provided information
+            customer_result = create_square_customer(
+                given_name=request.given_name or "Professional",
+                family_name=request.family_name or "",
+                email=request.email,
+                phone_number=request.phone_number
+            )
+            
+            if not customer_result.get("success"):
+                return {
+                    "valid": False,
+                    "error": customer_result.get("error", "Failed to create customer"),
+                    "message": f"Card validation failed: Could not create customer. {customer_result.get('error', 'Unknown error')}",
+                    "http_status": customer_result.get("http_status", 500)
+                }
+            
+            customer_id = customer_result.get("customer_id")
+            logger.info(f"Created actual customer {customer_id} for card validation (email: {request.email})")
         
         # Validate source_id format
         if not request.source_id or not request.source_id.strip():
@@ -1008,6 +1032,8 @@ def validate_card(
         )
         
         if card_result.get("success"):
+            # Card was successfully created and validated
+            # Return the customer_id so frontend can reuse it when creating the professional
             return {
                 "valid": True,
                 "card_details": {
@@ -1017,8 +1043,10 @@ def validate_card(
                     "exp_year": card_result.get("exp_year"),
                     "card_id": card_result.get("card_id")  # Square card ID (can be used for future payments)
                 },
-                "customer_id": customer_id,  # Return customer_id so it can be reused
-                "message": "Card is valid"
+                "customer_id": customer_id,  # Return customer_id - reuse this when creating professional
+                "card_id": card_result.get("card_id"),  # Return card_id - reuse this when creating professional
+                "message": "Card is valid",
+                "note": "Reuse customer_id and card_id when creating the professional account to avoid creating duplicates."
             }
         else:
             error_msg = card_result.get("error", "Unknown error")
@@ -1066,10 +1094,43 @@ def save_payment_method(
         raise HTTPException(status_code=404, detail="Professional not found")
 
     try:
-        # Create card on file via Square
-        # Note: For proper card on file, you should create a Square Customer first
-        # For now, we'll store the source_id for future payments
-        square_response = create_card_on_file(request.source_id)
+        # CRITICAL: Get or create Square customer first
+        # Cards MUST be associated with a customer_id
+        from utils.square_client import create_square_customer, get_square_customer_by_email
+        
+        # Get Square customer for this professional
+        square_customer_id = None
+        customer_result = get_square_customer_by_email(email)
+        if customer_result.get("success"):
+            square_customer_id = customer_result.get("customer_id")
+        else:
+            # Create Square customer if doesn't exist
+            customer_result = create_square_customer(
+                given_name=professional.name.split()[0] if professional.name else "Professional",
+                family_name=" ".join(professional.name.split()[1:]) if professional.name and len(professional.name.split()) > 1 else "",
+                email=email,
+                phone_number=professional.phone_number
+            )
+            if customer_result.get("success"):
+                square_customer_id = customer_result.get("customer_id")
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to create Square customer: {customer_result.get('error')}"
+                )
+        
+        if not square_customer_id:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to get or create Square customer for card storage"
+            )
+        
+        # Create card on file with customer_id - CRITICAL for proper association
+        logger.info(f"Creating card for customer {square_customer_id} (professional {professional.id})")
+        square_response = create_card_on_file(
+            source_id=request.source_id,
+            customer_id=square_customer_id  # CRITICAL: Must provide customer_id
+        )
 
         if not square_response.get("success"):
             raise Exception("Failed to create card on file")
@@ -1104,7 +1165,7 @@ def save_payment_method(
         
         payment_method = PaymentMethod(
             professional_id=professional.id,
-            square_card_id=square_response.get("card_id"),  # NOTE: This is source_id, not a reusable Card ID
+            square_card_id=square_response.get("card_id"),
             last_4_digits=last_4[-4:] if len(last_4) >= 4 else "****",
             card_brand=square_response.get("brand", "UNKNOWN"),
             exp_month=square_response.get("exp_month"),
@@ -1112,6 +1173,12 @@ def save_payment_method(
             is_default=is_default
         )
         db.add(payment_method)
+        
+        # CRITICAL: Store the square_customer_id with the professional if not already set
+        if not professional.square_customer_id:
+            professional.square_customer_id = square_customer_id
+            logger.info(f"Stored square_customer_id {square_customer_id} for professional {professional.id}")
+        
         db.commit()
         db.refresh(payment_method)
 

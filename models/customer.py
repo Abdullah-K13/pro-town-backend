@@ -15,4 +15,5 @@ class Customer(Base):
     zip_code = Column(String)
     email_notifications = Column(Boolean, default=True)
     sms_notifications = Column(Boolean, default=True)
+    referred_by = Column(Integer, nullable=True)  # Professional ID who referred this customer
     created_at = Column(TIMESTAMP, server_default=text("NOW()"))
