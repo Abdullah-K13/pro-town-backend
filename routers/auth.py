@@ -194,7 +194,10 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     email = body.email
     password = body.password
 
+    print("email", email)
+    print("password", password)
     user = db.query(Admin).filter(Admin.email == email).first()
+    print("user", user)
     role = "admins"
     if not user:
         user = db.query(Professional).filter(Professional.email == email).first()

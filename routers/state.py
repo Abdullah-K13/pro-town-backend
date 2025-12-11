@@ -8,6 +8,7 @@ router = APIRouter()
 
 @router.get("/")
 def get_all(db: Session = Depends(get_db)):
+    print("get_all")
     return db.query(State).all()
 
 @router.get("/{id}")

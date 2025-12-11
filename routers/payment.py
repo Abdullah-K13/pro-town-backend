@@ -79,7 +79,9 @@ class RenewSubscriptionRequest(BaseModel):
 
 class CreateSubscriptionRequest(BaseModel):
     plan_variation_id: str  # Subscription plan variation ID from catalog (e.g., "LYIAHPLNYRD3AX5FPCDDYDV3" for Monthly)
-    source_id: str  # Payment token from Square Web Payments SDK (required for initial subscription)
+    source_id: Optional[str] = None  # Payment token from Square Web Payments SDK (required if card_id not provided)
+    card_id: Optional[str] = None  # Saved card ID (required if source_id not provided)
+    customer_id: Optional[str] = None  # Square customer ID (optional, will be derived from login if not provided, or created)
     location_id: Optional[str] = None  # Square location ID (uses env var if not provided)
     professional_id: Optional[int] = None  # Professional ID to link subscription (optional)
     idempotency_key: Optional[str] = None
@@ -265,18 +267,29 @@ def create_square_subscription(
     
     Required:
     - plan_variation_id: Subscription plan variation ID from catalog
-      - Monthly: "LYIAHPLNYRD3AX5FPCDDYDV3"
-      - Yearly: "VGMYZYBSVKPM3CJWYK35FS7N"
+    
+    Payment Method (One is required):
     - source_id: Payment token from Square Web Payments SDK (for new card)
+    - card_id: Saved card ID (for existing card)
     
     Optional:
+    - customer_id: Square customer ID (will be derived from login if not provided)
     - location_id: Square location ID (uses env var if not provided)
     - professional_id: Professional ID to link subscription in database
     - idempotency_key: Unique key to prevent duplicates
     
-    Authentication: Required (Professional login)
+    Authentication: 
+    - Optional if customer_id and card_id/source_id provided.
+    - Required if relying on automatic customer lookup/creation based on login.
     """
     try:
+        # Validate that we have a payment method
+        if not request.source_id and not request.card_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Either source_id (new card) or card_id (saved card) must be provided."
+            )
+
         # Use location_id from request or environment
         location_id = request.location_id or os.getenv("SQUARE_LOCATION_ID", "")
         
@@ -286,53 +299,60 @@ def create_square_subscription(
                 detail="location_id is required. Provide it in the request or set SQUARE_LOCATION_ID in .env"
             )
         
-        # Authentication is required for subscriptions
-        if not payload:
-            raise HTTPException(
-                status_code=401,
-                detail="Authentication required. Please login as a professional to create a subscription."
-            )
-        
-        # Get or create Square customer
-        square_customer_id = None
+        # Determine customer_id
+        square_customer_id = request.customer_id
         professional = None
         
-        # If authenticated, get professional and create/find Square customer
-        email = payload.get("sub")
-        role = payload.get("role")
-        
-        if role != "professionals":
-            raise HTTPException(
-                status_code=403,
-                detail="Only professionals can create subscriptions."
-            )
-        
-        professional = db.query(Professional).filter(Professional.email == email).first()
-        if not professional:
-            raise HTTPException(
-                status_code=404,
-                detail="Professional not found. Please ensure you are registered as a professional."
-            )
-        
-        # Check if Square customer already exists
-        customer_result = get_square_customer_by_email(email)
-        if customer_result.get("success"):
-            square_customer_id = customer_result.get("customer_id")
-        else:
-            # Create Square customer
-            customer_result = create_square_customer(
-                given_name=professional.name.split()[0] if professional.name else "Professional",
-                family_name=" ".join(professional.name.split()[1:]) if professional.name and len(professional.name.split()) > 1 else "",
-                email=email,
-                phone_number=professional.phone_number
-            )
+        # If no customer_id provided, try to get from authenticated user
+        if not square_customer_id:
+            if not payload:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Authentication required to create subscription without providing customer_id."
+                )
+            
+            # If authenticated, get professional and create/find Square customer
+            email = payload.get("sub")
+            role = payload.get("role")
+            
+            if role != "professionals":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only professionals can create subscriptions."
+                )
+            
+            professional = db.query(Professional).filter(Professional.email == email).first()
+            if not professional:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Professional not found. Please ensure you are registered as a professional."
+                )
+            
+            # Check if Square customer already exists
+            customer_result = get_square_customer_by_email(email)
             if customer_result.get("success"):
                 square_customer_id = customer_result.get("customer_id")
             else:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to create Square customer: {customer_result.get('error')}"
+                # Create Square customer
+                customer_result = create_square_customer(
+                    given_name=professional.name.split()[0] if professional.name else "Professional",
+                    family_name=" ".join(professional.name.split()[1:]) if professional.name and len(professional.name.split()) > 1 else "",
+                    email=email,
+                    phone_number=professional.phone_number
                 )
+                if customer_result.get("success"):
+                    square_customer_id = customer_result.get("customer_id")
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to create Square customer: {customer_result.get('error')}"
+                    )
+        else:
+            # If customer_id provided but we are also authenticated, try to link professional
+            if payload:
+                 email = payload.get("sub")
+                 professional = db.query(Professional).filter(Professional.email == email).first()
+
         
         # Create the subscription
         result = create_subscription(
@@ -340,7 +360,7 @@ def create_square_subscription(
             location_id=location_id,
             plan_variation_id=request.plan_variation_id,
             source_id=request.source_id,
-            card_id=None,  # Using source_id for new subscriptions
+            card_id=request.card_id,
             idempotency_key=request.idempotency_key
         )
         
@@ -378,7 +398,7 @@ def create_square_subscription(
         subscription = result.get("subscription", {})
         subscription_id = result.get("subscription_id")
         
-        # Link subscription to professional in database if authenticated
+        # Link subscription to professional in database if found
         if professional:
             # Update professional's subscription status
             professional.subscription_active = True

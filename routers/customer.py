@@ -66,10 +66,34 @@ def get_my_customer_profile(
         from models.professional import Professional
         pro = db.query(Professional).filter(Professional.id == customer.referred_by).first()
         if pro:
-            customer_data["referral_info"] = {
+            referral_data = {
                 "name": pro.name,
-                "business_name": pro.business_name
+                "business_name": pro.business_name,
+                "email": pro.email,
+                "phone_number": pro.phone_number
             }
+            
+            # Fetch related data
+            from models.service import Service
+            from models.state import State
+            from models.city import City
+            
+            if pro.service_id:
+                svc = db.query(Service).filter(Service.id == pro.service_id).first()
+                if svc:
+                    referral_data["service_name"] = svc.service_name
+                    
+            if pro.state_id:
+                st = db.query(State).filter(State.id == pro.state_id).first()
+                if st:
+                    referral_data["state_name"] = st.state_name
+                    
+            if pro.city_id:
+                ct = db.query(City).filter(City.id == pro.city_id).first()
+                if ct:
+                    referral_data["city_name"] = ct.city_name
+                    
+            customer_data["referral_info"] = referral_data
 
     return customer_data
 

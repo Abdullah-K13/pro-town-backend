@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Square Payment SDK Test</title>
+    <!-- Using production SDK - works with http://localhost -->
+    <script type="text/javascript" src="https://web.squarecdn.com/v1/square.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .badge {
+            display: inline-block;
+            background: #fbbf24;
+            color: #78350f;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #374151;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        input[type="text"],
+        input[type="email"] {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        input[type="text"]:focus,
+        input[type="email"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        #card-container {
+            margin-bottom: 20px;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f9fafb;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            display: none;
+        }
+
+        .result.show {
+            display: block;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .result h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .result-item {
+            margin-bottom: 12px;
+            padding: 10px;
+            background: white;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .result-label {
+            font-weight: 600;
+            color: #374151;
+            display: inline-block;
+            min-width: 120px;
+        }
+
+        .result-value {
+            color: #667eea;
+            font-family: 'Courier New', monospace;
+            word-break: break-all;
+        }
+
+        .error {
+            background: #fee2e2;
+            border-left-color: #ef4444;
+        }
+
+        .error h3 {
+            color: #ef4444;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #ffffff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 0.6s linear infinite;
+            margin-left: 8px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .info-box {
+            background: #dbeafe;
+            border-left: 4px solid #3b82f6;
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #1e40af;
+        }
+
+        .info-box strong {
+            display: block;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <span class="badge">🧪 SANDBOX MODE</span>
+        <h1>Square Payment SDK Test</h1>
+        <p class="subtitle">Test card tokenization using Square Web Payments SDK</p>
+
+        <div class="info-box">
+            <strong>Test Card Numbers:</strong>
+            Visa: 4111 1111 1111 1111<br>
+            Mastercard: 5105 1051 0510 5100<br>
+            Exp: Any future date | CVV: Any 3 digits | ZIP: Any 5 digits
+        </div>
+
+        <form id="payment-form">
+            <div class="form-group">
+                <label for="email">Customer Email</label>
+                <input type="email" id="email" placeholder="customer@example.com" required>
+            </div>
+
+            <div class="form-group">
+                <label for="name">Cardholder Name</label>
+                <input type="text" id="name" placeholder="John Doe" required>
+            </div>
+
+            <div class="form-group">
+                <label>Card Details</label>
+                <div id="card-container"></div>
+            </div>
+
+            <button type="submit" id="submit-button">
+                <span id="button-text">Tokenize Card</span>
+            </button>
+        </form>
+
+        <div id="result" class="result"></div>
+    </div>
+
+    <script>
+        // ============================================================================
+        // CONFIGURATION
+        // ============================================================================
+
+        // IMPORTANT: Replace with your actual Square Application ID
+        // For Sandbox: Get from https://developer.squareup.com/apps
+        // For Production: Use your production app ID
+        const APPLICATION_ID = 'sq0idp-d_Kq5kyS-UNBiMdnmjhbkQ'; // ⚠️ REPLACE THIS
+        const LOCATION_ID = 'LTC83GFNXBNE6'; // ⚠️ REPLACE THIS (optional for tokenization)
+
+        // ============================================================================
+        // INITIALIZE SQUARE PAYMENTS
+        // ============================================================================
+
+        let card;
+        let payments;
+
+        async function initializeSquare() {
+            try {
+                if (!window.Square) {
+                    throw new Error('Square.js failed to load');
+                }
+
+                payments = window.Square.payments(APPLICATION_ID, LOCATION_ID);
+
+                // Initialize card payment method
+                card = await payments.card();
+                await card.attach('#card-container');
+
+                console.log('✅ Square Payments initialized successfully');
+            } catch (error) {
+                console.error('❌ Failed to initialize Square Payments:', error);
+                showResult({
+                    success: false,
+                    error: 'Failed to initialize Square Payments. Check your Application ID.',
+                    details: error.message
+                }, true);
+            }
+        }
+
+        // Initialize on page load
+        initializeSquare();
+
+        // ============================================================================
+        // FORM SUBMISSION & TOKENIZATION
+        // ============================================================================
+
+        document.getElementById('payment-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            const submitButton = document.getElementById('submit-button');
+            const buttonText = document.getElementById('button-text');
+
+            // Disable button and show loading
+            submitButton.disabled = true;
+            buttonText.innerHTML = 'Processing<span class="loading"></span>';
+
+            try {
+                // Tokenize the card
+                const result = await card.tokenize();
+
+                if (result.status === 'OK') {
+                    // Success! We have a token
+                    const email = document.getElementById('email').value;
+                    const name = document.getElementById('name').value;
+
+                    showResult({
+                        success: true,
+                        token: result.token,
+                        card_brand: result.details?.card?.brand || 'Unknown',
+                        last_4: result.details?.card?.last4 || 'N/A',
+                        exp_month: result.details?.card?.expMonth || 'N/A',
+                        exp_year: result.details?.card?.expYear || 'N/A',
+                        postal_code: result.details?.card?.billing?.postalCode || 'N/A',
+                        customer_email: email,
+                        customer_name: name,
+                        message: 'Card tokenized successfully! You can now use this token to create a payment or save the card.'
+                    });
+
+                    console.log('✅ Tokenization successful:', result);
+                } else {
+                    // Tokenization failed
+                    const errors = result.errors || [];
+                    const errorMessages = errors.map(e => e.message).join(', ');
+
+                    showResult({
+                        success: false,
+                        error: 'Card tokenization failed',
+                        details: errorMessages || 'Unknown error occurred',
+                        errors: errors
+                    }, true);
+
+                    console.error('❌ Tokenization failed:', result);
+                }
+            } catch (error) {
+                showResult({
+                    success: false,
+                    error: 'An error occurred during tokenization',
+                    details: error.message
+                }, true);
+
+                console.error('❌ Error:', error);
+            } finally {
+                // Re-enable button
+                submitButton.disabled = false;
+                buttonText.textContent = 'Tokenize Card';
+            }
+        });
+
+        // ============================================================================
+        // DISPLAY RESULTS
+        // ============================================================================
+
+        function showResult(data, isError = false) {
+            const resultDiv = document.getElementById('result');
+
+            if (isError) {
+                resultDiv.className = 'result error show';
+                resultDiv.innerHTML = `
+                    <h3>❌ Error</h3>
+                    <div class="result-item">
+                        <span class="result-label">Error:</span>
+                        <span class="result-value">${data.error}</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Details:</span>
+                        <span class="result-value">${data.details || 'No additional details'}</span>
+                    </div>
+                `;
+            } else {
+                resultDiv.className = 'result show';
+                resultDiv.innerHTML = `
+                    <h3>✅ ${data.message || 'Success'}</h3>
+                    <div class="result-item">
+                        <span class="result-label">Card Token:</span>
+                        <span class="result-value">${data.token}</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Card Brand:</span>
+                        <span class="result-value">${data.card_brand}</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Last 4 Digits:</span>
+                        <span class="result-value">${data.last_4}</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Expiration:</span>
+                        <span class="result-value">${data.exp_month}/${data.exp_year}</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Postal Code:</span>
+                        <span class="result-value">${data.postal_code}</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Customer Email:</span>
+                        <span class="result-value">${data.customer_email}</span>
+                    </div>
+                    <div class="result-item">
+                        <span class="result-label">Customer Name:</span>
+                        <span class="result-value">${data.customer_name}</span>
+                    </div>
+                `;
+            }
+
+            // Scroll to result
+            resultDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // ============================================================================
+        // HELPER: Copy token to clipboard
+        // ============================================================================
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Token copied to clipboard!');
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+            });
+        }
+    </script>
+</body>
+
+</html>
