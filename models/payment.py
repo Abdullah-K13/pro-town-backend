@@ -6,10 +6,10 @@ class Payment(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     professional_id = Column(Integer, ForeignKey("professionals.id"), nullable=True)  # Nullable for application payments
+    square_customer_id = Column(String(50), nullable=True)
     subscription_plan_id = Column(Integer, ForeignKey("subscriptions.id"), nullable=True)
     amount = Column(Integer, nullable=False)  # Amount in cents
     square_transaction_id = Column(String(255), unique=True, nullable=True)
     status = Column(String(50), default="PENDING")  # SUCCESS, FAILED, PENDING
     payment_method_id = Column(Integer, ForeignKey("payment_methods.id"), nullable=True)
     created_at = Column(TIMESTAMP, server_default=text("NOW()"))
-

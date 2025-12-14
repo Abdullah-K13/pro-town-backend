@@ -35,12 +35,11 @@ def decode_token(token: str):
     except JWTError:
         return None
 
-def create_referral_token(user_id: int, expires_delta: timedelta = timedelta(days=3650)):
+def create_referral_token(user_id: int):
     """
-    Create a long-lived token specifically for referrals.
+    Create a permanent token specifically for referrals.
     Scope is limited to 'referral' to prevent use for authentication.
     """
     to_encode = {"sub": str(user_id), "type": "referral"}
-    expire = datetime.utcnow() + expires_delta
-    to_encode.update({"exp": expire})
+    # No expiration for referral tokens
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)

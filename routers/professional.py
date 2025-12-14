@@ -49,8 +49,8 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")  # adjust
 s3 = boto3.client(
     "s3",
     region_name=AWS_REGION,
-    aws_access_key_id="AKIA46ALPOQWPLWEINMP",
-    aws_secret_access_key="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",
+    aws_access_key_id="AKIA46ALPOQWCY5GJ77C",
+    aws_secret_access_key="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",
 )
 
 @router.get("/", dependencies=[Depends(role_required("admins"))])
@@ -227,14 +227,142 @@ def get_professional(professional_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404)
     return pro
 
-# @router.post("/", )
-# def create_professional(data: dict, db: Session = Depends(get_db)):
-#     data["password_hash"] = hash_password(data.pop("password", "pro123"))
-#     p = Professional(**data)
-#     db.add(p)
-#     db.commit()
-#     db.refresh(p)
-#     return p
+@router.post("/")
+def create_professional(
+    payload: str = Form(...),
+    insurance_document: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # 1. Validation: check email unique
+    email = data.get("email")
+    if db.query(Professional).filter(Professional.email == email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # 2. Upload Insurance Document
+    file_url = None
+    if insurance_document:
+        try:
+            file_content = insurance_document.file.read()
+            filename = f"insurance/{uuid4()}_{insurance_document.filename}"
+            s3.upload_fileobj(
+                io.BytesIO(file_content),
+                S3_BUCKET,
+                filename,
+                ExtraArgs={"ContentType": insurance_document.content_type}
+            )
+            file_url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{filename}"
+        except ClientError as e:
+            logger.error(f"S3 Upload Error: {e}")
+            raise HTTPException(status_code=500, detail="Failed to upload insurance document")
+
+    # 3. Create Professional in DB
+    try:
+        # Hash password
+        pwd = data.get("password", "pro123")
+        hashed = hash_password(pwd)
+        
+        # Extract fields
+        new_pro = Professional(
+            name=data.get("name") or data.get("fullName"),
+            email=email,
+            password_hash=hashed,
+            phone_number=data.get("phone_number"),
+            business_name=data.get("business_name"),
+            business_address=data.get("business_address"),
+            website=data.get("website"),
+            experience_years=data.get("experience_years"),
+            business_insurance=data.get("business_insurance"),
+            google_certified=data.get("google_certified"),
+            facebook_page=data.get("facebook_page"),
+            linkedin_profile=data.get("linkedin_profile"),
+            twitter_handle=data.get("twitter_handle"),
+            instagram_profile=data.get("instagram_profile"),
+            service_id=data.get("service_id"),
+            state_id=data.get("state_id"),
+            city_id=data.get("city_id"),
+            insurance_doc_url=file_url,
+            verified_status=False, # Always false initially
+            subscription_plan_id=data.get("subscription_plan_id"),
+            pending_subscription_plan_variation_id=data.get("subscription_plan_variation_id")
+        )
+        
+        db.add(new_pro)
+        db.commit()
+        db.refresh(new_pro)
+        
+        # 4. Integrate with Square if token provided
+        payment_source_id = data.get("payment_source_id")
+        if payment_source_id:
+            try:
+                from utils.square_client import create_square_customer, create_card_on_file
+                from models.payment_method import PaymentMethod
+
+                # A. Create Square Customer
+                # Split name
+                full_name = new_pro.name or ""
+                parts = full_name.split(" ", 1)
+                given_name = parts[0]
+                family_name = parts[1] if len(parts) > 1 else ""
+                
+                cust_res = create_square_customer(
+                    given_name=given_name,
+                    family_name=family_name,
+                    email=new_pro.email,
+                    phone_number=new_pro.phone_number
+                )
+                
+                if not cust_res.get("success"):
+                    logger.error(f"Failed to create Square Customer: {cust_res.get('error')}")
+                    # Don't fail the whole request, but log error
+                    # Admin can fix later
+                else:
+                    square_cust_id = cust_res.get("customer_id")
+                    
+                    # Update Pro with Square Customer ID
+                    new_pro.square_customer_id = square_cust_id
+                    db.commit() # Save progress
+                    
+                    # B. Create Card on File
+                    card_res = create_card_on_file(
+                        source_id=payment_source_id,
+                        customer_id=square_cust_id
+                    )
+                    
+                    if card_res.get("success"):
+                        card_id = card_res.get("card_id")
+                        card_data = card_res.get("card", {})
+                        
+                        # C. Create PaymentMethod record
+                        pm = PaymentMethod(
+                            professional_id=new_pro.id,
+                            square_card_id=card_id,
+                            last_4_digits=card_data.get("last_4", "****"),
+                            card_brand=card_data.get("card_brand", "UNKNOWN"),
+                            exp_month=card_data.get("exp_month"),
+                            exp_year=card_data.get("exp_year"),
+                            is_default=True
+                        )
+                        db.add(pm)
+                        db.commit()
+                        logger.info(f"Successfully created Square Customer {square_cust_id} and Card {card_id} for Pro {new_pro.id}")
+                    else:
+                        logger.error(f"Failed to create card on file: {card_res.get('error')}")
+
+            except Exception as sq_err:
+                logger.error(f"Square Integration Error: {sq_err}")
+                # Continue without failing request
+        
+        return new_pro
+
+    except Exception as e:
+        logger.error(f"Create Professional Error: {e}")
+        db.rollback() # Rollback DB transaction on error
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---- NEW: self-update using access token ----
@@ -277,6 +405,55 @@ def update_my_professional_profile(
     db.refresh(me)
     return me
 
+@router.post("/me/document", dependencies=[Depends(role_required("professionals"))])
+def upload_professional_document(
+    insurance_document: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    payload = Depends(get_current_user),
+):
+    """
+    Upload or replace the business insurance document for the authenticated professional.
+    """
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    pro_id = payload.get("uid") or payload.get("user_id") or payload.get("id")
+    email = payload.get("sub")
+
+    me = None
+    if pro_id is not None:
+        me = db.query(Professional).filter(Professional.id == int(pro_id)).first()
+    if me is None and email:
+        me = db.query(Professional).filter(Professional.email == email).first()
+
+    if not me:
+        raise HTTPException(status_code=404, detail="Professional not found")
+
+    # Upload to S3
+    file_url = None
+    try:
+        file_content = insurance_document.file.read()
+        filename = f"insurance/{uuid4()}_{insurance_document.filename}"
+        s3.upload_fileobj(
+            io.BytesIO(file_content),
+            S3_BUCKET,
+            filename,
+            ExtraArgs={"ContentType": insurance_document.content_type}
+        )
+        file_url = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{filename}"
+    except ClientError as e:
+        logger.error(f"S3 Upload Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload document")
+
+    # Update Professional
+    me.insurance_doc_url = file_url
+    me.documents_uploaded = True
+    
+    db.commit()
+    db.refresh(me)
+    
+    return {"url": file_url, "message": "Document uploaded successfully"}
+
 @router.delete("/{professional_id}", dependencies=[Depends(role_required("admins"))])
 def delete_professional(professional_id: int, db: Session = Depends(get_db)):
     p = db.query(Professional).get(professional_id)
@@ -318,427 +495,23 @@ def update_professional(
         setattr(p, k, v)
     
     # If professional is being verified and has pending subscription, activate it
-    # This happens BEFORE setting verified_status to ensure subscription is created first
     subscription_created = False
     subscription_error = None
     had_pending_subscription = bool(p.pending_subscription_plan_variation_id)
-    
+
     if not was_verified and will_be_verified and p.pending_subscription_plan_variation_id:
-        try:
-            from utils.square_client import create_subscription, get_square_customer_by_email
-            from models.payment_method import PaymentMethod
-            import uuid as uuid_lib
-            import os
-            
-            # Get saved payment method - try default first, then any payment method
-            payment_method = db.query(PaymentMethod).filter(
-                PaymentMethod.professional_id == p.id,
-                PaymentMethod.is_default == True
-            ).first()
-            
-            # If no default payment method, try to get any payment method
-            if not payment_method:
-                payment_method = db.query(PaymentMethod).filter(
-                    PaymentMethod.professional_id == p.id
-                ).first()
-                
-                # If we found a payment method but it's not default, set it as default
-                if payment_method:
-                    # Unset other defaults
-                    db.query(PaymentMethod).filter(
-                        PaymentMethod.professional_id == p.id,
-                        PaymentMethod.id != payment_method.id
-                    ).update({"is_default": False})
-                    # Set this one as default
-                    payment_method.is_default = True
-                    db.commit()
-                    logger.info(f"Set payment method {payment_method.id} as default for professional {p.id}")
-            
-            if not payment_method:
-                # Check if professional has square_customer_id and try to get cards from Square
-                square_customer_id = p.square_customer_id
-                if not square_customer_id:
-                    # Try to find customer by email
-                    customer_result = get_square_customer_by_email(p.email)
-                    if customer_result.get("success"):
-                        square_customer_id = customer_result.get("customer_id")
-                        p.square_customer_id = square_customer_id
-                        db.commit()
-                
-                if square_customer_id:
-                    # First verify the customer exists in Square
-                    from utils.square_client import get_square_customer_by_id, get_customer_cards, get_square_customer_by_email
-                    customer_check = get_square_customer_by_id(square_customer_id)
-                    
-                    # If stored customer_id doesn't exist, try to find customer by email
-                    if not customer_check.get("success"):
-                        http_status = customer_check.get("http_status")
-                        if http_status == 404:
-                            logger.warning(f"⚠️  Stored customer_id {square_customer_id} not found in Square. Searching by email: {p.email}")
-                            # Try to find customer by email
-                            email_search = get_square_customer_by_email(p.email)
-                            if email_search.get("success"):
-                                # Found customer by email - update stored ID
-                                correct_customer_id = email_search.get("customer_id")
-                                logger.info(f"✅ Found customer by email. Updating stored customer_id from {square_customer_id} to {correct_customer_id}")
-                                p.square_customer_id = correct_customer_id
-                                square_customer_id = correct_customer_id
-                                db.commit()
-                            else:
-                                logger.error(f"❌ Professional {p.id} verified but Square customer {square_customer_id} does NOT exist in Square (404).")
-                                logger.error(f"   Searched by email {p.email} but customer not found.")
-                                logger.error(f"   This customer_id may be from a different environment (sandbox vs production) or was deleted.")
-                                logger.error(f"   Action needed: Professional must add a payment method via /payments/save-method or re-register with card.")
-                                return p
-                        else:
-                            logger.error(f"Professional {p.id} verified but could not verify Square customer {square_customer_id}: {customer_check.get('error')}")
-                            return p
-                    
-                    # Customer exists, now try to get cards
-                    cards_result = get_customer_cards(square_customer_id)
-                    
-                    if cards_result.get("success") and cards_result.get("cards"):
-                        cards = cards_result.get("cards", [])
-                        if cards:
-                            # Use the first card
-                            first_card = cards[0]
-                            card_id = first_card.get("id")
-                            
-                            # Create payment method from Square card
-                            payment_method = PaymentMethod(
-                                professional_id=p.id,
-                                square_card_id=card_id,
-                                last_4_digits=first_card.get("last_4", "****"),
-                                card_brand=first_card.get("card_brand", "UNKNOWN"),
-                                exp_month=first_card.get("exp_month"),
-                                exp_year=first_card.get("exp_year"),
-                                is_default=True
-                            )
-                            db.add(payment_method)
-                            db.commit()
-                            db.refresh(payment_method)
-                            logger.info(f"✅ Created payment method from Square card {card_id} for professional {p.id}")
-                        else:
-                            logger.error(f"❌ Professional {p.id} verified but customer {square_customer_id} has no cards in Square.")
-                            logger.error(f"   Professional email: {p.email}")
-                            logger.error(f"   Action needed: Professional must add a payment method via /payments/save-method endpoint.")
-                            return p
-                    else:
-                        # Cards API returned error - try searching by email as fallback
-                        http_status = cards_result.get("http_status")
-                        error_msg = cards_result.get("error", "Unknown error")
-                        
-                        if http_status == 404:
-                            # 404 from cards API - customer might exist but cards API might have issues
-                            # Try to verify customer exists and search by email as fallback
-                            logger.warning(f"⚠️  Cards API returned 404 for customer {square_customer_id}. Verifying customer exists...")
-                            
-                            # Double-check customer exists
-                            customer_verify = get_square_customer_by_id(square_customer_id)
-                            if not customer_verify.get("success"):
-                                # Customer doesn't exist with stored ID - try email search
-                                logger.warning(f"⚠️  Customer {square_customer_id} not found. Searching by email: {p.email}")
-                                email_search = get_square_customer_by_email(p.email)
-                                if email_search.get("success"):
-                                    correct_customer_id = email_search.get("customer_id")
-                                    logger.info(f"✅ Found customer by email. Updating stored customer_id from {square_customer_id} to {correct_customer_id}")
-                                    p.square_customer_id = correct_customer_id
-                                    square_customer_id = correct_customer_id
-                                    db.commit()
-                                    
-                                    # Try getting cards again with correct customer ID
-                                    cards_result = get_customer_cards(square_customer_id)
-                                    if cards_result.get("success") and cards_result.get("cards"):
-                                        cards = cards_result.get("cards", [])
-                                        if cards:
-                                            first_card = cards[0]
-                                            card_id = first_card.get("id")
-                                            
-                                            payment_method = PaymentMethod(
-                                                professional_id=p.id,
-                                                square_card_id=card_id,
-                                                last_4_digits=first_card.get("last_4", "****"),
-                                                card_brand=first_card.get("card_brand", "UNKNOWN"),
-                                                exp_month=first_card.get("exp_month"),
-                                                exp_year=first_card.get("exp_year"),
-                                                is_default=True
-                                            )
-                                            db.add(payment_method)
-                                            db.commit()
-                                            db.refresh(payment_method)
-                                            logger.info(f"✅ Created payment method from Square card {card_id} for professional {p.id} using corrected customer_id")
-                                        else:
-                                            logger.error(f"❌ Professional {p.id} verified but customer {square_customer_id} has no cards in Square.")
-                                            logger.error(f"   Professional email: {p.email}")
-                                            logger.error(f"   Action needed: Professional must add a payment method via /payments/save-method endpoint.")
-                                            return p
-                                    else:
-                                        logger.error(f"❌ Professional {p.id} verified but customer {square_customer_id} has no cards in Square (404 from cards API).")
-                                        logger.error(f"   Professional email: {p.email}")
-                                        logger.error(f"   Action needed: Professional must add a payment method via /payments/save-method endpoint.")
-                                        return p
-                                else:
-                                    logger.error(f"❌ Professional {p.id} verified but could not find customer in Square by ID or email.")
-                                    logger.error(f"   Stored customer_id: {square_customer_id}")
-                                    logger.error(f"   Professional email: {p.email}")
-                                    logger.error(f"   Action needed: Professional must add a payment method via /payments/save-method endpoint.")
-                                    return p
-                            else:
-                                # Customer exists but cards API returned 404 - likely no cards
-                                logger.error(f"❌ Professional {p.id} verified but customer {square_customer_id} has no cards in Square (404 from cards API).")
-                                logger.error(f"   Professional email: {p.email}")
-                                logger.error(f"   Customer exists in Square but has no saved cards.")
-                                logger.error(f"   Action needed: Professional must add a payment method via /payments/save-method endpoint.")
-                                return p
-                        else:
-                            logger.error(f"Professional {p.id} verified but could not retrieve cards from Square: {error_msg} (HTTP {http_status})")
-                            return p
-                else:
-                    logger.error(f"Professional {p.id} verified but no payment method found and no Square customer ID. Subscription not activated.")
-                return p
-            
-            # Get or use stored Square customer ID
-            square_customer_id = p.square_customer_id
-            if not square_customer_id:
-                # Try to find customer by email
-                customer_result = get_square_customer_by_email(p.email)
-                if customer_result.get("success"):
-                    square_customer_id = customer_result.get("customer_id")
-                    p.square_customer_id = square_customer_id
-                    db.commit()
-                    
-                    # CRITICAL: When we find/create a customer, also check for cards and create payment method
-                    # This ensures payment methods are created using the same logic as /payments/save-method
-                    logger.info(f"Found customer {square_customer_id} by email. Checking for cards to create payment method...")
-                    cards_result = get_customer_cards(square_customer_id)
-                    
-                    if cards_result.get("success") and cards_result.get("cards"):
-                        cards = cards_result.get("cards", [])
-                        if cards:
-                            # Check if payment method already exists for this card
-                            first_card = cards[0]
-                            card_id = first_card.get("id")
-                            
-                            # Check if we already have this card saved
-                            existing_payment_method = db.query(PaymentMethod).filter(
-                                PaymentMethod.professional_id == p.id,
-                                PaymentMethod.square_card_id == card_id
-                            ).first()
-                            
-                            if not existing_payment_method:
-                                # Create payment method from Square card using same logic as /payments/save-method
-                                existing_methods_count = db.query(PaymentMethod).filter(
-                                    PaymentMethod.professional_id == p.id
-                                ).count()
-                                is_default = existing_methods_count == 0
-                                
-                                # If setting as default, unset other defaults
-                                if is_default:
-                                    db.query(PaymentMethod).filter(
-                                        PaymentMethod.professional_id == p.id
-                                    ).update({"is_default": False})
-                                
-                                payment_method = PaymentMethod(
-                                    professional_id=p.id,
-                                    square_card_id=card_id,
-                                    last_4_digits=first_card.get("last_4", "****")[-4:] if len(first_card.get("last_4", "")) >= 4 else "****",
-                                    card_brand=first_card.get("card_brand", "UNKNOWN"),
-                                    exp_month=first_card.get("exp_month"),
-                                    exp_year=first_card.get("exp_year"),
-                                    is_default=is_default
-                                )
-                                db.add(payment_method)
-                                db.commit()
-                                db.refresh(payment_method)
-                                logger.info(f"✅ Created payment method from Square card {card_id} for professional {p.id} (using /payments/save-method logic)")
-                            else:
-                                logger.info(f"Payment method already exists for card {card_id}")
-                                payment_method = existing_payment_method
-            
-            if not square_customer_id:
-                logger.error(f"Professional {p.id} verified but no Square customer ID found. Subscription not activated.")
-                return p
-            
-            # Get location ID - try configured one first, then get available locations
-            location_id = os.getenv("SQUARE_LOCATION_ID", "")
-            from utils.square_client import get_square_locations
-            
-            # If location_id is set, verify it's accessible
-            if location_id:
-                locations_result = get_square_locations()
-                if locations_result.get("success"):
-                    available_location_ids = locations_result.get("location_ids", [])
-                    if location_id not in available_location_ids:
-                        logger.warning(f"Configured location ID {location_id} not accessible. Available locations: {available_location_ids}")
-                        # Use first available location if configured one doesn't work
-                        if available_location_ids:
-                            location_id = available_location_ids[0]
-                            logger.info(f"Using first available location: {location_id}")
-                        else:
-                            logger.error(f"No accessible locations found for professional {p.id}.")
-                            return p
-                else:
-                    logger.warning(f"Could not verify location access: {locations_result.get('error')}")
-            else:
-                # No location ID configured, get first available
-                locations_result = get_square_locations()
-                if locations_result.get("success") and locations_result.get("location_ids"):
-                    location_id = locations_result.get("location_ids")[0]
-                    logger.info(f"No SQUARE_LOCATION_ID configured. Using first available location: {location_id}")
-                else:
-                    logger.error(f"SQUARE_LOCATION_ID not set and could not get locations. Subscription not activated for professional {p.id}.")
-                    return p
-            
-            # CRITICAL: Ensure the card belongs to this customer
-            # The stored card_id MUST belong to the current square_customer_id
-            stored_card_id = payment_method.square_card_id
-            
-            if not stored_card_id:
-                logger.error(f"Professional {p.id} has no card_id stored in payment method.")
-                return p
-            
-            # Verify the stored card belongs to this customer
-            # This prevents the INVALID_CARD error where card belongs to different customer
-            from utils.square_client import get_customer_cards
-            cards_result = get_customer_cards(square_customer_id)
-            card_id_to_use = None
-            
-            if cards_result.get("success") and cards_result.get("cards"):
-                cards = cards_result.get("cards", [])
-                # Find the stored card in the customer's cards
-                for card in cards:
-                    card_id = card.get("id")
-                    # Match exact ID or handle ccof: prefix
-                    if card_id == stored_card_id:
-                        card_id_to_use = card_id
-                        break
-                    # Also check if stored is ccof: and card is without prefix (or vice versa)
-                    elif stored_card_id.startswith("ccof:") and card_id == stored_card_id.replace("ccof:", ""):
-                        card_id_to_use = card_id
-                        break
-                    elif card_id.startswith("ccof:") and stored_card_id == card_id.replace("ccof:", ""):
-                        card_id_to_use = card_id
-                        break
-                
-                if card_id_to_use:
-                    logger.info(f"✅ Verified card {card_id_to_use} belongs to customer {square_customer_id} for professional {p.id}")
-                else:
-                    # Stored card not found in customer's cards - CRITICAL ERROR
-                    logger.error(f"❌ CRITICAL: Stored card_id '{stored_card_id}' does NOT belong to customer '{square_customer_id}'")
-                    logger.error(f"   Professional ID: {p.id}, Email: {p.email}")
-                    logger.error(f"   Customer has {len(cards)} card(s): {[c.get('id') for c in cards]}")
-                    logger.error(f"   This means the card was created for a different customer or environment.")
-                    logger.error(f"   Cannot create subscription - card/customer mismatch will cause INVALID_CARD error.")
-                    return p
-            else:
-                # Card lookup failed - could be API issue or customer has no cards
-                error_msg = cards_result.get("error", "Unknown error")
-                http_status = cards_result.get("http_status")
-                
-                # If 404, it means customer has no cards, but we have a stored card_id - this is a problem!
-                if http_status == 404:
-                    logger.error(f"❌ CRITICAL: Customer '{square_customer_id}' has NO cards in Square (404), but we have stored card_id '{stored_card_id}'")
-                    logger.error(f"   This indicates the card was created for a different customer or in a different environment.")
-                    logger.error(f"   Cannot safely create subscription - would result in INVALID_CARD error.")
-                    return p
-                else:
-                    # API error - log but try to proceed with stored card (risky but might work)
-                    logger.warning(f"⚠️  Could not verify card ownership via API: {error_msg} (HTTP {http_status})")
-                    logger.warning(f"   Using stored card_id '{stored_card_id}' without verification.")
-                    logger.warning(f"   If this fails with INVALID_CARD error, the card belongs to a different customer.")
-                    card_id_to_use = stored_card_id
-            
-            if not card_id_to_use:
-                logger.error(f"Could not determine valid card_id for professional {p.id}")
-                return p
-            
-            # Create subscription (THIS IS WHERE THE CHARGE HAPPENS)
-            idempotency_key = str(uuid_lib.uuid4())
-            logger.info(f"Creating subscription for professional {p.id} with card_id: {card_id_to_use}")
-            subscription_result = create_subscription(
-                customer_id=square_customer_id,
-                location_id=location_id,
-                plan_variation_id=p.pending_subscription_plan_variation_id,
-                source_id=None,
-                card_id=card_id_to_use,
-                idempotency_key=idempotency_key
-            )
-            
-            if subscription_result.get("success"):
-                # Subscription created and charged successfully
-                subscription_id = subscription_result.get('subscription_id')
-                subscription_status = subscription_result.get('status', 'ACTIVE')
-                
-                # Update database with subscription info
-                p.subscription_active = True
-                p.pending_subscription_plan_variation_id = None  # Clear pending flag
-                p.square_subscription_id = subscription_id  # Save subscription ID
-                subscription_created = True
-                
-                logger.info(f"✅ Subscription created and charged for professional {p.id}")
-                logger.info(f"   Subscription ID: {subscription_id}")
-                logger.info(f"   Status: {subscription_status}")
-                logger.info(f"   Customer ID: {square_customer_id}")
-                logger.info(f"   Card ID: {card_id_to_use}")
-                logger.info(f"   Plan: {p.pending_subscription_plan_variation_id}")
-            else:
-                error_msg = subscription_result.get('error', 'Unknown error')
-                http_status = subscription_result.get('http_status', 'N/A')
-                subscription_error = error_msg
-                
-                logger.error(f"❌ Failed to create subscription for professional {p.id}")
-                logger.error(f"   Error: {error_msg} (HTTP {http_status})")
-                logger.error(f"   Customer ID: {square_customer_id}")
-                logger.error(f"   Card ID used: {card_id_to_use}")
-                logger.error(f"   Plan: {p.pending_subscription_plan_variation_id}")
-                
-                # Check for specific error types
-                error_lower = error_msg.lower()
-                if "declined" in error_lower or "insufficient" in error_lower:
-                    logger.error(f"   ⚠️  Payment declined - card may be declined or insufficient funds")
-                elif "invalid_card" in error_lower or "card" in error_lower and "invalid" in error_lower:
-                    logger.error(f"   ⚠️  Invalid card - card may not belong to customer or is invalid")
-                elif "customer" in error_lower and "not found" in error_lower:
-                    logger.error(f"   ⚠️  Customer not found - customer_id may be invalid")
-                
-                # Don't set verified_status if subscription fails
-                # Admin can retry subscription activation later
-                subscription_created = False
-                
-        except Exception as e:
-            subscription_error = str(e)
-            logger.error(f"❌ Exception activating subscription for professional {p.id}: {str(e)}")
-            logger.error(f"   Exception type: {type(e).__name__}")
-            import traceback
-            logger.error(f"   Traceback: {traceback.format_exc()}")
-            subscription_created = False
-    
-    # Only set verified_status to True if subscription was successfully created
-    # OR if there's no pending subscription to activate
-    if not was_verified and will_be_verified:
-        if had_pending_subscription:
-            # Had pending subscription - only verify if subscription was created
-            if subscription_created:
-                p.verified_status = True
-                logger.info(f"✅ Professional {p.id} verified and subscription activated")
-            else:
-                # Subscription failed - keep verified_status as False
-                logger.warning(f"⚠️  Professional {p.id} verification deferred - subscription creation failed")
-                if subscription_error:
-                    logger.warning(f"   Error: {subscription_error}")
-                logger.warning(f"   Professional will remain unverified until subscription is successfully created")
-                # Revert verified_status to False
-                p.verified_status = False
-        else:
-            # No pending subscription - just verify
+        success, error = _activate_subscription_for_professional(db, p)
+        if success:
             p.verified_status = True
-            logger.info(f"✅ Professional {p.id} verified (no subscription to activate)")
+            subscription_created = True
+        else:
+            subscription_error = error
+            # Revert verified status if subscription fails
+            p.verified_status = False
     
-    # Commit all changes
     db.commit()
     db.refresh(p)
     
-    # Return response with subscription status
     response_data = {
         "id": p.id,
         "name": p.name,
@@ -756,6 +529,161 @@ def update_professional(
         response_data["message"] = "Professional verified and subscription activated successfully"
     
     return response_data
+
+@router.post("/{professional_id}/verify", dependencies=[Depends(role_required("admins"))])
+def verify_professional(
+    professional_id: int,
+    data: dict = Body(..., example={"verify": True}), 
+    db: Session = Depends(get_db)
+):
+    """
+    Verify or Reject a Professional.
+    Payload: {"verify": true} or {"verify": false}
+    
+    - true: Sets verified_status=True. If pending subscription exists, activates it.
+    - false: Sets verified_status=False.
+    """
+    p = db.query(Professional).get(professional_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Professional not found")
+
+    verify = data.get("verify")
+    if verify is None:
+        raise HTTPException(status_code=400, detail="Missing 'verify' boolean in body")
+
+    if verify:
+        # VERIFY
+        # 1. Activate Subscription if pending
+        if p.pending_subscription_plan_variation_id and not p.subscription_active:
+             success, error = _activate_subscription_for_professional(db, p)
+             if success:
+                 p.verified_status = True
+                 logger.info(f"✅ Professional {p.id} verified and subscription activated")
+             else:
+                 # Subscription failed, do not verify
+                 logger.warning(f"⚠️ Professional {p.id} verification deferred - subscription failed: {error}")
+                 return {
+                     "success": False, 
+                     "message": f"Verification failed. Subscription could not be activated: {error}",
+                     "professional": {"id": p.id, "verified_status": False}
+                }
+        else:
+            # No pending subscription or already active
+             p.verified_status = True
+             logger.info(f"✅ Professional {p.id} verified (no pending subscription)")
+
+    else:
+        # REJECT / UNVERIFY
+        p.verified_status = False
+        logger.info(f"ℹ️ Professional {p.id} unverified/rejected by admin")
+    
+    db.commit()
+    db.refresh(p)
+    return {
+        "success": True, 
+        "professional": {
+            "id": p.id, 
+            "name": p.name, 
+            "verified_status": p.verified_status,
+            "subscription_active": p.subscription_active
+        }
+    }
+
+def _activate_subscription_for_professional(db: Session, p: Professional) -> tuple[bool, str | None]:
+    """
+    Helper to activate pending subscription for a professional.
+    Returns (success, error_message).
+    """
+    try:
+        from utils.square_client import create_subscription, get_square_customer_by_email, get_square_customer_by_id, get_customer_cards, get_square_locations
+        from models.payment_method import PaymentMethod
+        import uuid as uuid_lib
+        import os
+        
+        # Get location ID
+        location_id = os.getenv("SQUARE_LOCATION_ID", "")
+        if not location_id:
+             locations_result = get_square_locations()
+             if locations_result.get("success") and locations_result.get("location_ids"):
+                 location_id = locations_result.get("location_ids")[0]
+             else:
+                 return False, "SQUARE_LOCATION_ID not set and could not fetch available locations."
+
+        # Get saved payment method
+        payment_method = db.query(PaymentMethod).filter(
+            PaymentMethod.professional_id == p.id,
+            PaymentMethod.is_default == True
+        ).first()
+
+        if not payment_method:
+             # Try any method
+             payment_method = db.query(PaymentMethod).filter(PaymentMethod.professional_id == p.id).first()
+
+        # If still no payment method, try to find one from Square cards
+        if not payment_method:
+            square_customer_id = p.square_customer_id
+            if not square_customer_id:
+                 # Try finding by email
+                 cust_res = get_square_customer_by_email(p.email)
+                 if cust_res.get("success"):
+                     square_customer_id = cust_res.get("customer_id")
+                     p.square_customer_id = square_customer_id
+                     db.commit()
+            
+            if square_customer_id:
+                # Check for cards in Square
+                cards_res = get_customer_cards(square_customer_id)
+                if cards_res.get("success") and cards_res.get("cards"):
+                    first_card = cards_res.get("cards")[0]
+                    card_id = first_card.get("id")
+                    
+                    # Create local PaymentMethod
+                    payment_method = PaymentMethod(
+                        professional_id=p.id,
+                        square_card_id=card_id,
+                        last_4_digits=first_card.get("last_4", "****"),
+                        card_brand=first_card.get("card_brand", "UNKNOWN"),
+                        exp_month=first_card.get("exp_month"),
+                        exp_year=first_card.get("exp_year"),
+                        is_default=True
+                    )
+                    db.add(payment_method)
+                    db.commit()
+                    db.refresh(payment_method)
+                else:
+                    return False, "No payment method found locally or in Square."
+            else:
+                return False, "No Customer ID and no Payment Method found."
+        
+        # Validate Card ID
+        card_id_to_use = payment_method.square_card_id
+        if not card_id_to_use:
+            return False, "Payment Method has no card_id."
+
+        # Create Subscription
+        idempotency_key = str(uuid_lib.uuid4())
+        subscription_result = create_subscription(
+            customer_id=p.square_customer_id, # Must use stored ID
+            location_id=location_id,
+            plan_variation_id=p.pending_subscription_plan_variation_id,
+            card_id=card_id_to_use,
+            idempotency_key=idempotency_key
+        )
+
+        if subscription_result.get("success"):
+            subscription_id = subscription_result.get('subscription_id')
+            p.subscription_active = True
+            p.pending_subscription_plan_variation_id = None
+            p.square_subscription_id = subscription_id
+            db.commit()
+            return True, None
+        else:
+             return False, subscription_result.get("error", "Unknown Square error")
+
+    except Exception as e:
+        logger.error(f"Error activating subscription: {e}")
+        return False, str(e)
+
 
 @router.put("/{professional_id}/subscription", dependencies=[Depends(get_current_user)])
 def update_professional_subscription(
@@ -966,7 +894,7 @@ async def create_professional(
     if subscription_plan_variation_id and (payment_source_id or card_id):
         logger.info("DEBUG: Entering subscription setup block")
         try:
-            from utils.square_client import create_square_customer, create_card_on_file, update_square_customer
+            from utils.square_client import create_square_customer, create_card_on_file, update_square_customer, search_subscriptions
             from models.payment_method import PaymentMethod
             
             # Validate subscription plan variation ID
@@ -1242,3 +1170,139 @@ async def create_professional(
         response_dict["subscription"] = subscription_info
     
     return response_dict
+
+@router.get("/me/subscription")
+def get_my_subscription(db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+    """
+    Get the professional's current subscription details from Square with plan information
+    """
+    # Get professional from token (current_user is a dict)
+    pro_id = current_user.get("uid") or current_user.get("user_id") or current_user.get("id")
+    email = current_user.get("sub")
+    
+    prof = None
+    if pro_id:
+        prof = db.query(Professional).filter(Professional.id == int(pro_id)).first()
+    if not prof and email:
+        prof = db.query(Professional).filter(Professional.email == email).first()
+        
+    if not prof:
+        raise HTTPException(status_code=404, detail="Professional not found")
+    
+    if not prof.square_customer_id:
+        return {"active": False, "message": "No Square customer ID found"}
+
+    from utils.square_client import search_subscriptions, get_subscription_plans
+    from models.subscription import Subscription
+    import requests
+
+    # Search for subscriptions for this customer
+    result = search_subscriptions([prof.square_customer_id])
+    
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error"))
+
+    subscriptions = result.get("subscriptions", [])
+    
+    # Filter for active or paused subscriptions
+    active_subs = [s for s in subscriptions if s.get("status") in ["ACTIVE", "PAUSED"]]
+
+    if not active_subs:
+        return {"active": False, "message": "No active subscriptions found"}
+
+    # Get the first active subscription
+    sub = active_subs[0]
+    plan_variation_id = sub.get("plan_variation_id")
+    square_status = sub.get("status")
+    
+    # Update local database with current status from Square
+    if square_status:
+        prof.subscription_status = square_status
+        if square_status == "ACTIVE":
+            prof.subscription_active = True
+        elif square_status in ["PAUSED", "CANCELED"]:
+            prof.subscription_active = False
+        db.commit()
+        logger.info(f"Synced professional {prof.id} subscription_status to {square_status}")
+    
+    # Fetch plan details - try local DB first, then Square catalog
+    plan_name = "Subscription Plan"
+    price = "$0.00"
+    billing_period = "monthly"
+    plan_description = None
+    
+    # Try to get plan details from local database first
+    if plan_variation_id:
+        db_plan = db.query(Subscription).filter(
+            Subscription.plan_variation_id == plan_variation_id
+        ).first()
+        
+        if db_plan:
+            plan_name = db_plan.plan_name or "Subscription Plan"
+            if db_plan.plan_cost:
+                price = f"${float(db_plan.plan_cost):.2f}"
+            plan_description = db_plan.plan_description
+            logger.info(f"Found plan details in local DB: {plan_name}")
+    
+    # If not found in DB or need more details, fetch from Square catalog
+    if plan_variation_id and (not plan_description or price == "$0.00"):
+        try:
+            # Get all subscription plans from Square
+            plans_result = get_subscription_plans()
+            
+            if plans_result.get("success"):
+                plans = plans_result.get("plans", [])
+                
+                # Find the matching plan variation
+                for plan in plans:
+                    for variation in plan.get("variations", []):
+                        if variation.get("id") == plan_variation_id:
+                            # Found the matching variation
+                            if not db_plan or not db_plan.plan_name:
+                                plan_name = variation.get("name") or plan.get("name", "Subscription Plan")
+                            
+                            # Get price from phases
+                            phases = variation.get("phases", [])
+                            if phases and len(phases) > 0:
+                                phase = phases[0]
+                                price_money = phase.get("recurring_price_money", {})
+                                amount = price_money.get("amount", 0)
+                                currency = price_money.get("currency", "USD")
+                                
+                                # Convert cents to dollars
+                                if amount > 0:
+                                    price = f"${amount / 100:.2f}"
+                                
+                                # Determine billing period
+                                cadence = phase.get("cadence", "MONTHLY")
+                                if cadence == "MONTHLY":
+                                    billing_period = "month"
+                                elif cadence == "ANNUAL":
+                                    billing_period = "year"
+                                elif cadence == "WEEKLY":
+                                    billing_period = "week"
+                                elif cadence == "DAILY":
+                                    billing_period = "day"
+                            
+                            break
+                    else:
+                        continue
+                    break
+        except Exception as e:
+            logger.error(f"Error fetching plan details from Square: {e}")
+            # Continue with DB values or defaults
+    
+    return {
+        "active": True,
+        "subscription": sub,
+        "plan_name": plan_name,
+        "plan_variation_id": plan_variation_id,
+        "price": price,
+        "billing_period": billing_period,
+        "plan_description": plan_description,
+        "status": square_status,
+        "subscription_status": prof.subscription_status,  # Include DB status
+        "renewal_date": sub.get("charged_through_date"),
+        "start_date": sub.get("start_date"),
+        "square_subscription_id": sub.get("id")
+    }

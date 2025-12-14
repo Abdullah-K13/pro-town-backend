@@ -788,16 +788,127 @@ def get_subscriptions(customer_id: Optional[str] = None, status: Optional[str] =
         data = response.json()
         
         # Check for API-level errors
-        if data.get("errors"):
-            errors = data.get("errors", [])
-            error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
-            logger.error(f"Square API returned errors: {error_messages}")
+        errors = data.get("errors", [])
+        
+        subscriptions = []
+        if "subscriptions" in data:
+            subscriptions = data["subscriptions"]
+            
+        return {
+            "success": True,
+            "subscriptions": subscriptions,
+            "cursor": data.get("cursor"),
+            "count": len(subscriptions)
+        }
+    except Exception as e:
+        logger.error(f"Error fetching subscriptions: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "subscriptions": []
+        }
+
+
+def get_customer_cards(customer_id: str) -> Dict[str, Any]:
+    """
+    Fetch all cards on file for a customer.
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/cards"
+        headers = get_square_headers()
+        params = {"customer_id": customer_id}
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
             return {
                 "success": False,
-                "error": ', '.join(error_messages),
-                "subscriptions": [],
-                "errors": errors
+                "error": response.text,
+                "cards": []
             }
+            
+        data = response.json()
+        return {
+            "success": True,
+            "cards": data.get("cards", [])
+        }
+    except Exception as e:
+        logger.error(f"Error fetching customer cards: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "cards": []
+        }
+
+
+def get_customer_details(customer_id: str) -> Dict[str, Any]:
+    """
+    Fetch customer details including attached cards and active subscription plan.
+    
+    Args:
+        customer_id: Square customer ID
+        
+    Returns:
+        Dict with keys:
+        - is_card_attached: bool
+        - card_details: Dict (if attached)
+        - subscription_plan: Dict (if active)
+        - subscription_status: str
+    """
+    try:
+        # 1. Fetch Cards
+        cards_result = get_customer_cards(customer_id)
+        cards = cards_result.get("cards", [])
+        is_card_attached = len(cards) > 0
+        card_details = cards[0] if is_card_attached else None
+        
+        # 2. Fetch Subscriptions
+        # We want active subscriptions usually
+        subs_result = get_subscriptions(customer_id=customer_id)
+        subscriptions = subs_result.get("subscriptions", [])
+        
+        # Determine primary/latest active subscription
+        # Sort by start_date desc to get latest? Or just take the first active one.
+        active_sub = None
+        sub_status = "NONE"
+        
+        active_subs = [s for s in subscriptions if s.get("status") == "ACTIVE"]
+        
+        if active_subs:
+            active_sub = active_subs[0]
+            sub_status = "ACTIVE"
+        elif subscriptions:
+            # If no active, maybe take the most recent one pending or canceled
+            active_sub = subscriptions[0] 
+            sub_status = active_sub.get("status")
+            
+        return {
+            "success": True,
+            "customer_id": customer_id,
+            "is_card_attached": is_card_attached,
+            "card_details": {
+                "id": card_details.get("id"),
+                "brand": card_details.get("card_brand"),
+                "last_4": card_details.get("last_4"),
+                "exp_month": card_details.get("exp_month"),
+                "exp_year": card_details.get("exp_year")
+            } if card_details else None,
+            "subscription_plan": {
+                "id": active_sub.get("id"),
+                "plan_id": active_sub.get("plan_id"),
+                "start_date": active_sub.get("start_date"),
+                "charged_through_date": active_sub.get("charged_through_date")
+            } if active_sub else None,
+            "subscription_status": sub_status
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting customer details: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
         
         subscriptions = data.get("subscriptions", [])
         
@@ -1231,7 +1342,8 @@ def create_subscription(
     plan_variation_id: str,
     source_id: Optional[str] = None,
     card_id: Optional[str] = None,
-    idempotency_key: Optional[str] = None
+    idempotency_key: Optional[str] = None,
+    start_date: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Create a subscription using Square Subscriptions API.
@@ -1242,20 +1354,13 @@ def create_subscription(
         plan_variation_id: Subscription plan variation ID from catalog
         source_id: Payment token from Square Web Payments SDK (for new card)
         card_id: Square card ID (for saved card)
-        idempotency_key: Unique key to prevent duplicate subscriptions
+        idempotency_key: Optional unique key to prevent duplicate creation
+        start_date: Optional start date in YYYY-MM-DD format (defaults to immediate)
     
     Returns:
-        Dict with subscription data
-    
-    Note: Either source_id OR card_id must be provided, not both.
+        Dict with created subscription data
     """
     try:
-        if not source_id and not card_id:
-            raise ValueError("Either source_id or card_id must be provided")
-        
-        if source_id and card_id:
-            raise ValueError("Provide either source_id OR card_id, not both")
-        
         url = f"{get_square_base_url()}/v2/subscriptions"
         headers = get_square_headers()
         
@@ -1264,38 +1369,68 @@ def create_subscription(
             import uuid
             idempotency_key = str(uuid.uuid4())
         
-        # If source_id is provided, we need to create a card on file first
-        # Square Subscriptions API only accepts card_id, not source_id directly
-        if source_id and not card_id:
-            # Create card on file first
-            card_result = create_card_on_file(source_id=source_id, customer_id=customer_id)
-            if not card_result.get("success"):
+        # Determine card_id to use
+        final_card_id = card_id
+        
+        # If no card_id provided but we have source_id, we need to create a card first
+        # Square Subscriptions API requires a card_id on the customer profile
+        if not final_card_id and source_id:
+            logger.info("Creating card from source_id for subscription")
+            card_res = create_card_on_file(source_id, customer_id)
+            if card_res.get("success"):
+                final_card_id = card_res.get("card_id")
+            else:
                 return {
                     "success": False,
-                    "error": f"Failed to create card on file: {card_result.get('error')}",
+                    "error": f"Failed to create card for subscription: {card_res.get('error')}",
                     "subscription": None,
-                    "http_status": card_result.get("http_status", 500)
+                    "http_status": card_res.get("http_status", 500) # Added http_status for consistency
                 }
-            card_id = card_result.get("card_id")
         
-        # Build subscription request according to Square API format
-        # Square Subscriptions API only accepts card_id, not source_id
-        if not card_id:
-            raise ValueError("card_id is required. If you provided source_id, card creation may have failed.")
-        
+        if not final_card_id:
+            return {
+                "success": False,
+                "error": "No card_id provided and could not create one from source_id",
+                "subscription": None
+            }
+            
         payload = {
             "idempotency_key": idempotency_key,
             "location_id": location_id,
             "plan_variation_id": plan_variation_id,
             "customer_id": customer_id,
-            "card_id": card_id
+            "card_id": final_card_id
         }
         
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if start_date:
+            payload["start_date"] = start_date
         
-        if response.status_code not in [200, 201]:
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # check for errors
+            if data.get("errors"):
+                errors = data.get("errors", [])
+                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+                return {
+                    "success": False,
+                    "error": ', '.join(error_messages),
+                    "subscription": None,
+                    "errors": errors
+                }
+                
+            subscription = data.get("subscription", {})
+            return {
+                "success": True,
+                "subscription": subscription,
+                "subscription_id": subscription.get("id"),
+                "status": subscription.get("status"),
+                "errors": []
+            }
+        else:
             error_text = response.text
-            logger.error(f"Square Create Subscription API error: {response.status_code} - {error_text}")
+            logger.error(f"Square API error (create_subscription): {response.status_code} - {error_text}")
             try:
                 error_data = response.json()
                 errors = error_data.get("errors", [])
@@ -1315,30 +1450,6 @@ def create_subscription(
                     "http_status": response.status_code
                 }
         
-        data = response.json()
-        
-        # Check for API-level errors
-        if data.get("errors"):
-            errors = data.get("errors", [])
-            error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
-            logger.error(f"Square API returned errors: {error_messages}")
-            return {
-                "success": False,
-                "error": ', '.join(error_messages),
-                "subscription": None,
-                "errors": errors
-            }
-        
-        subscription = data.get("subscription", {})
-        
-        return {
-            "success": True,
-            "subscription": subscription,
-            "subscription_id": subscription.get("id"),
-            "status": subscription.get("status"),
-            "errors": data.get("errors", [])
-        }
-        
     except ValueError as e:
         logger.error(f"Validation error creating subscription: {str(e)}")
         return {
@@ -1347,6 +1458,60 @@ def create_subscription(
             "subscription": None
         }
     except requests.exceptions.RequestException as e:
+        logger.error(f"Request exception creating subscription: {str(e)}")
+        return {
+            "success": False,
+            "error": "Failed to connect to Square API",
+            "subscription": None
+        }
+
+def search_subscriptions(customer_ids: list[str]) -> dict[str, Any]:
+    """
+    Search for subscriptions by customer IDs.
+    
+    Args:
+        customer_ids: List of Square customer IDs to filter by
+        
+    Returns:
+        Dict with search results including subscriptions list
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/subscriptions/search"
+        headers = get_square_headers()
+        
+        payload = {
+            "query": {
+                "filter": {
+                    "customer_ids": customer_ids
+                }
+            }
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "success": True,
+                "subscriptions": data.get("subscriptions", []),
+                "errors": []
+            }
+        else:
+            logger.error(f"Square API error (search_subscriptions): {response.status_code} - {response.text}")
+            return {
+                "success": False,
+                "error": f"Square API Error: {response.status_code}",
+                "subscriptions": [],
+                "http_status": response.status_code
+            }
+            
+    except Exception as e:
+        logger.error(f"Error searching subscriptions: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "subscriptions": []
+        }
         logger.error(f"Error creating subscription: {str(e)}")
         if hasattr(e, 'response') and e.response is not None:
             try:
@@ -1692,45 +1857,79 @@ def cancel_subscription(subscription_id: str) -> Dict[str, Any]:
 
 def update_subscription(subscription_id: str, plan_variation_id: str) -> Dict[str, Any]:
     """
-    Update a subscription plan in Square.
+    Swap subscription plan using Square's swap plan action.
+    This is the correct way to change a subscription plan in Square.
     """
     try:
-        # First get the current subscription to get the version
-        get_url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}"
+        # Use Square's swap plan action endpoint
+        url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}/swap-plan"
         headers = get_square_headers()
         
-        get_response = requests.get(get_url, headers=headers, timeout=10)
-        if get_response.status_code != 200:
-            return {
-                "success": False,
-                "error": "Failed to fetch subscription details",
-                "http_status": get_response.status_code
-            }
-            
-        current_subscription = get_response.json().get("subscription", {})
-        version = current_subscription.get("version")
-        
-        if not version:
-            return {
-                "success": False,
-                "error": "Could not determine subscription version"
-            }
-            
-        # Now update the subscription
-        url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}"
-        
         payload = {
-            "subscription": {
-                "version": version,
-                "plan_variation_id": plan_variation_id
-            }
+            "new_plan_variation_id": plan_variation_id
         }
         
-        response = requests.put(url, json=payload, headers=headers, timeout=10)
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
         
         if response.status_code != 200:
             error_text = response.text
-            logger.error(f"Square Update Subscription API error: {response.status_code} - {error_text}")
+            logger.error(f"Square Swap Plan API error: {response.status_code} - {error_text}")
+            try:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+                return {
+                    "success": False,
+                    "error": ', '.join(error_messages),
+                    "http_status": response.status_code
+                }
+            except:
+                return {
+                    "success": False,
+                    "error": error_text,
+                    "http_status": response.status_code
+                }
+        
+        data = response.json()
+        
+        if "subscription" in data:
+            subscription = data["subscription"]
+            logger.info(f"Successfully swapped subscription {subscription_id} to plan {plan_variation_id}")
+            return {
+                "success": True,
+                "subscription": subscription,
+                "status": subscription.get("status"),
+                "new_plan_variation_id": plan_variation_id
+            }
+        else:
+            errors = data.get("errors", [])
+            error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+            return {
+                "success": False,
+                "error": ', '.join(error_messages)
+            }
+            
+    except Exception as e:
+        logger.error(f"Error swapping subscription plan: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def pause_subscription(subscription_id: str) -> Dict[str, Any]:
+    """
+    Pause a subscription in Square.
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}/pause"
+        headers = get_square_headers()
+        
+        response = requests.post(url, json={}, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            error_text = response.text
+            logger.error(f"Square Pause Subscription API error: {response.status_code} - {error_text}")
             try:
                 error_data = response.json()
                 errors = error_data.get("errors", [])
@@ -1757,11 +1956,152 @@ def update_subscription(subscription_id: str, plan_variation_id: str) -> Dict[st
                 "status": subscription.get("status")
             }
         else:
-            errors = data.get("errors", [])
-            error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+             return {
+                "success": False,
+                "error": "Unknown error"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error pausing subscription: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def resume_subscription(subscription_id: str, resume_effective_date: Optional[str] = None, resume_change_timing: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Resume a paused subscription in Square.
+    
+    Args:
+        subscription_id: ID of subscription to resume
+        resume_effective_date: Optional specific date to resume (YYYY-MM-DD). 
+        resume_change_timing: Optional timing for resume (e.g., "IMMEDIATE").
+                              Use "IMMEDIATE" to cancel a scheduled pause.
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}/resume"
+        headers = get_square_headers()
+        
+        payload = {}
+        if resume_effective_date:
+            payload["resume_effective_date"] = resume_effective_date
+            
+        if resume_change_timing:
+            payload["resume_change_timing"] = resume_change_timing
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            error_text = response.text
+            logger.error(f"Square Resume Subscription API error: {response.status_code} - {error_text}")
+            try:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+                return {
+                    "success": False,
+                    "error": ', '.join(error_messages),
+                    "http_status": response.status_code
+                }
+            except:
+                return {
+                    "success": False,
+                    "error": error_text,
+                    "http_status": response.status_code
+                }
+        
+        data = response.json()
+        
+        if "subscription" in data:
+            subscription = data["subscription"]
+            return {
+                "success": True,
+                "subscription": subscription,
+                "status": subscription.get("status")
+            }
+        else:
+             return {
+                "success": False,
+                "error": "Unknown error"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error resuming subscription: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def retrieve_subscription(subscription_id: str) -> Dict[str, Any]:
+    """
+    Retrieve a single subscription by ID.
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}"
+        headers = get_square_headers()
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "success": True,
+                "subscription": data.get("subscription", {}),
+                "errors": []
+            }
+        else:
+            error_text = response.text
             return {
                 "success": False,
-                "error": ', '.join(error_messages)
+                "error": f"Square API Error: {response.status_code}",
+                "http_status": response.status_code,
+                "details": error_text
+            }
+            
+    except Exception as e:
+        logger.error(f"Error retrieving subscription: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def update_subscription(subscription_id: str, plan_variation_id: str = None, card_id: str = None) -> Dict[str, Any]:
+    """
+    Update a subscription (e.g. change plan or card).
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/subscriptions/{subscription_id}"
+        headers = get_square_headers()
+        
+        subscription_obj = {}
+        if plan_variation_id:
+            subscription_obj["plan_variation_id"] = plan_variation_id
+        if card_id:
+            subscription_obj["card_id"] = card_id
+            
+        payload = {
+            "subscription": subscription_obj
+        }
+        
+        response = requests.put(url, json=payload, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "success": True,
+                "subscription": data.get("subscription", {}),
+                "status": data.get("subscription", {}).get("status")
+            }
+        else:
+            error_text = response.text
+            logger.error(f"Square Update Subscription API error: {response.status_code} - {error_text}")
+            return {
+                "success": False,
+                "error": f"Square API Error: {response.status_code}",
+                "details": error_text
             }
             
     except Exception as e:

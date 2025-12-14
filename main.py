@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from db.init import init_db
 from routers import (
     auth, customer, professional, admin, subscription,
-    service, state, city, service_city_pair, professional_pair, lead, analytics, newsletter, payment  # adjust path
+    service, state, city, service_city_pair, professional_pair, lead, analytics, newsletter, payment, public  # adjust path
 )
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -47,6 +47,7 @@ app.include_router(lead.router, prefix="/leads", tags=["Leads"])
 app.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
 app.include_router(newsletter.router, prefix="/newsletter", tags=["Newsletter"])
 app.include_router(payment.router, prefix="/payments", tags=["Payments"])
+app.include_router(public.router, prefix="/public", tags=["Public"])
 
 
 @app.get("/")

@@ -9,7 +9,7 @@ from utils.deps import role_required
 router = APIRouter()
 
 
-@router.get("/", dependencies=[Depends(role_required("admins"))])
+@router.get("/")
 def get_all_subscriptions_with_counts(db: Session = Depends(get_db)):
     """
     Get all subscriptions and how many professionals are subscribed

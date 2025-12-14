@@ -27,6 +27,7 @@ class Professional(Base):
     insurance_doc_url = Column(String(512), nullable=True)
     subscription_plan_id = Column(Integer, ForeignKey("subscriptions.id"))
     subscription_active = Column(Boolean, default=False)
+    subscription_status = Column(String(50), nullable=True)  # ACTIVE, PAUSED, CANCELED, etc.
     pending_subscription_plan_variation_id = Column(String(255), nullable=True)  # Store Square plan variation ID for later activation
     square_customer_id = Column(String(255), nullable=True)  # Store Square customer ID
     square_subscription_id = Column(String(255), nullable=True)  # Store Square subscription ID

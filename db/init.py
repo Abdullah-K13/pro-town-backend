@@ -48,7 +48,9 @@ def init_db(seed: bool = True):
         state_city,
         payment_method,
         payment,
+        payment,
         invoice,
+        subscription_log,
     )
 
     # Create tables

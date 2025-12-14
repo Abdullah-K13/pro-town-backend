@@ -70,7 +70,8 @@ def get_my_customer_profile(
                 "name": pro.name,
                 "business_name": pro.business_name,
                 "email": pro.email,
-                "phone_number": pro.phone_number
+                "phone_number": pro.phone_number,
+                "id": pro.id
             }
             
             # Fetch related data
@@ -136,13 +137,33 @@ def create_customer(data: dict, db: Session = Depends(get_db)):
             from utils.security import decode_token
             from models.professional import Professional
             
+            # 1. Try to decode as JWT
             payload = decode_token(referral_token)
+            
             if payload and payload.get("type") == "referral":
                 pro_id = payload.get("sub")
                 # Verify professional exists
                 pro = db.query(Professional).filter(Professional.id == int(pro_id)).first()
                 if pro:
                     referred_by_id = pro.id
+            else:
+                # 2. If not a valid JWT, try to parse as slug-based token (format: slug-slug-ID)
+                # This handles cases where decode_token returns None
+                try:
+                    # Assuming the token ends with "-{id}"
+                    parts = referral_token.rsplit('-', 1)
+                    if len(parts) == 2 and parts[1].isdigit():
+                        pro_id = int(parts[1])
+                        pro = db.query(Professional).filter(Professional.id == pro_id).first()
+                        if pro:
+                            print(f"✅ Success: Parsed referral slug. Professional ID: {pro.id}")
+                            referred_by_id = pro.id
+                        else:
+                            print(f"⚠️ Warning: Referral ID {pro_id} parsed from slug, but Professional not found.")
+                except Exception as e2:
+                    print(f"Error processing referral token as slug: {e2}")
+                    pass
+
         except Exception as e:
             # Log error but don't fail signup
             print(f"Error processing referral token: {e}")
