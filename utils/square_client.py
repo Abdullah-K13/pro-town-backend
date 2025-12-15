@@ -2110,3 +2110,82 @@ def update_subscription(subscription_id: str, plan_variation_id: str = None, car
             "success": False,
             "error": str(e)
         }
+
+def get_customer_invoices(customer_id: str, location_id: Optional[str] = None, limit: Optional[int] = None, cursor: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Fetch invoices for a specific customer from Square API.
+    
+    Args:
+        customer_id: Square customer ID
+        location_id: Square location ID (optional, defaults to env var)
+        limit: Max number of results
+        cursor: Pagination cursor
+    
+    Returns:
+        Dict with invoices data
+    """
+    try:
+        url = f"{get_square_base_url()}/v2/invoices/search"
+        headers = get_square_headers()
+        
+        loc_id = location_id or SQUARE_LOCATION_ID
+        
+        # Build search query
+        payload = {
+            "query": {
+                "filter": {
+                    "customer_ids": [customer_id]
+                },
+                "sort": {
+                    "field": "INVOICE_SORT_DATE",
+                    "order": "DESC"
+                }
+            }
+        }
+        
+        if loc_id:
+             payload["query"]["filter"]["location_ids"] = [loc_id]
+             
+        if limit:
+            payload["limit"] = limit
+        if cursor:
+            payload["cursor"] = cursor
+            
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            error_text = response.text
+            logger.error(f"Square Invoices API error: {response.status_code} - {error_text}")
+            try:
+                error_data = response.json()
+                errors = error_data.get("errors", [])
+                error_messages = [error.get("detail", error.get("code", "Unknown error")) for error in errors]
+                return {
+                    "success": False,
+                    "error": ', '.join(error_messages),
+                    "invoices": [],
+                    "http_status": response.status_code
+                }
+            except:
+                return {
+                    "success": False,
+                    "error": error_text,
+                    "invoices": [],
+                    "http_status": response.status_code
+                }
+        
+        data = response.json()
+        return {
+            "success": True,
+            "invoices": data.get("invoices", []),
+            "cursor": data.get("cursor"),
+            "errors": data.get("errors", [])
+        }
+            
+    except Exception as e:
+        logger.error(f"Error fetching invoices: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "invoices": []
+        }

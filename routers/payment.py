@@ -204,37 +204,23 @@ def get_billing_history(
         if not prof:
             raise HTTPException(status_code=404, detail="Professional not found")
         
-        # Fetch invoices with related data
-        invoices = db.query(Invoice).filter(
-            Invoice.professional_id == prof.id
-        ).order_by(Invoice.invoice_date.desc()).all()
+        # Fetch invoices from Square
+        from utils.square_client import get_customer_invoices
         
-        billing_history = []
-        for invoice in invoices:
-            # Get subscription plan details
-            plan = db.query(Subscription).filter(Subscription.id == invoice.subscription_plan_id).first()
+        if not prof.square_customer_id:
+             return {"success": True, "data": [], "count": 0}
+             
+        result = get_customer_invoices(customer_id=prof.square_customer_id)
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error"))
             
-            # Get payment details if payment_id exists
-            payment = None
-            if invoice.payment_id:
-                payment = db.query(Payment).filter(Payment.id == invoice.payment_id).first()
-            
-            billing_history.append({
-                "id": invoice.id,
-                "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
-                "due_date": invoice.due_date.isoformat() if invoice.due_date else None,
-                "amount": invoice.amount / 100,  # Convert cents to dollars
-                "status": invoice.status,
-                "plan_name": plan.plan_name if plan else "Unknown Plan",
-                "payment_id": invoice.payment_id,
-                "square_transaction_id": payment.square_transaction_id if payment else None,
-                "created_at": invoice.created_at.isoformat() if invoice.created_at else None
-            })
+        invoices = result.get("invoices", [])
         
         return {
             "success": True,
-            "data": billing_history,
-            "count": len(billing_history)
+            "data": invoices,
+            "count": len(invoices)
         }
     except HTTPException:
         raise
