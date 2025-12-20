@@ -16,7 +16,8 @@ def send_email(
     to_email: str,
     subject: str,
     body: str,
-    is_html: bool = True
+    is_html: bool = True,
+    reply_to: Optional[dict] = None
 ) -> tuple[bool, Optional[str]]:
     """
     Send a single email using Brevo API.
@@ -42,6 +43,9 @@ def send_email(
             payload["htmlContent"] = body
         else:
             payload["textContent"] = body
+
+        if reply_to:
+            payload["replyTo"] = reply_to
 
         # Make API request to Brevo
         headers = {
@@ -196,11 +200,13 @@ def send_customer_welcome_email(customer_name: str, customer_email: str) -> tupl
     return send_email(customer_email, subject, html_body, is_html=True)
 
 
+
+
 def send_contact_form_email(name: str, email: str, subject: str, message: str) -> tuple[bool, Optional[str]]:
     """
     Send an email to ProTown Network with a query from the contact us form.
     """
-    to_email = "protownnetwork@gmail.com"
+    to_email = "support@protownnetwork.com"
     email_subject = f"Contact Us Query: {subject}"
     
     html_body = f"""
@@ -241,5 +247,8 @@ def send_contact_form_email(name: str, email: str, subject: str, message: str) -
     </html>
     """
     
-    return send_email(to_email, email_subject, html_body, is_html=True)
+    # Set reply-to so hitting reply goes to the user
+    reply_to = {"email": email, "name": name}
+    
+    return send_email(to_email, email_subject, html_body, is_html=True, reply_to=reply_to)
 
