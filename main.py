@@ -1,5 +1,9 @@
 from fastapi import FastAPI
 from db.init import init_db
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from routers import (
     auth, customer, professional, admin, subscription,
     service, state, city, service_city_pair, professional_pair, lead, analytics, newsletter, payment, public  # adjust path
