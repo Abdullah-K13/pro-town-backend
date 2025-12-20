@@ -11,7 +11,7 @@ services:
     depends_on:
       - db
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres_user:123456@localhost:5432/protown_db
+      DATABASE_URL: postgresql+psycopg2://postgres_user:123456@db:5432/protown_db
     deploy:
       resources:
         limits:
