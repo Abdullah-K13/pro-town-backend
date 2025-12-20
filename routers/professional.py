@@ -464,6 +464,57 @@ def delete_professional(professional_id: int, db: Session = Depends(get_db)):
     return {"deleted": True}
 
 
+def _remove_professional_from_pairs(db: Session, professional_id: int) -> int:
+    """
+    Remove professional from all professional_pairs entries by setting their field to NULL.
+    Keeps the pair row intact but removes the professional reference.
+    Returns count of fields nullified.
+    """
+    # Update rows where professional is in position 1
+    updated_1 = db.query(ProfessionalPair).filter(
+        ProfessionalPair.professional_id_1 == professional_id
+    ).update({"professional_id_1": None}, synchronize_session=False)
+    
+    # Update rows where professional is in position 2
+    updated_2 = db.query(ProfessionalPair).filter(
+        ProfessionalPair.professional_id_2 == professional_id
+    ).update({"professional_id_2": None}, synchronize_session=False)
+    
+    db.commit()
+    logger.info(f"Nullified professional {professional_id} from {updated_1 + updated_2} pair field(s)")
+    return updated_1 + updated_2
+
+
+def _cancel_professional_subscription(db: Session, p: Professional) -> tuple[bool, str | None]:
+    """
+    Cancel professional's Square subscription if active.
+    Returns (success, error_message).
+    """
+    if not p.square_subscription_id or not p.subscription_active:
+        logger.info(f"Professional {p.id} has no active subscription to cancel")
+        return True, None  # Nothing to cancel
+    
+    try:
+        from utils.square_client import cancel_subscription
+        
+        logger.info(f"Attempting to cancel subscription {p.square_subscription_id} for professional {p.id}")
+        result = cancel_subscription(p.square_subscription_id)
+        
+        if result.get("success"):
+            p.subscription_active = False
+            p.subscription_status = "CANCELED"
+            db.commit()
+            logger.info(f"✅ Successfully cancelled subscription for professional {p.id}")
+            return True, None
+        else:
+            error_msg = result.get("error", "Unknown error")
+            logger.error(f"❌ Failed to cancel subscription for professional {p.id}: {error_msg}")
+            return False, error_msg
+    except Exception as e:
+        logger.error(f"❌ Exception while cancelling subscription for professional {p.id}: {e}")
+        return False, str(e)
+
+
 @router.put("/{professional_id}", dependencies=[Depends(role_required("admins"))])
 def update_professional(
     professional_id: int,
@@ -509,6 +560,47 @@ def update_professional(
             # Revert verified status if subscription fails
             p.verified_status = False
     
+    # If professional is being suspended (verified -> unverified), remove from pairs and cancel subscription
+    pairs_nullified = 0
+    subscription_cancelled = False
+    suspension_error = None
+    
+    if was_verified and not will_be_verified:
+        logger.info(f"Professional {professional_id} is being suspended")
+        
+        # Set verified_status to False
+        p.verified_status = False
+        
+        # Remove from professional pairs (nullify fields)
+        try:
+            pairs_nullified = _remove_professional_from_pairs(db, professional_id)
+            logger.info(f"Removed professional {professional_id} from {pairs_nullified} pair field(s)")
+        except Exception as e:
+            logger.error(f"Error removing professional {professional_id} from pairs: {e}")
+            suspension_error = f"Failed to remove from pairs: {str(e)}"
+        
+        # Cancel subscription
+        try:
+            success, error = _cancel_professional_subscription(db, p)
+            if success:
+                subscription_cancelled = True
+                logger.info(f"Successfully cancelled subscription for professional {professional_id}")
+            else:
+                logger.error(f"Failed to cancel subscription for professional {professional_id}: {error}")
+                if suspension_error:
+                    suspension_error += f"; Subscription cancellation failed: {error}"
+                else:
+                    suspension_error = f"Subscription cancellation failed: {error}"
+        except Exception as e:
+            logger.error(f"Exception cancelling subscription for professional {professional_id}: {e}")
+            if suspension_error:
+                suspension_error += f"; Exception: {str(e)}"
+            else:
+                suspension_error = f"Exception: {str(e)}"
+    elif "verified_status" in update_data and not was_verified and will_be_verified:
+        # Just setting verified_status without pending subscription
+        p.verified_status = True
+    
     db.commit()
     db.refresh(p)
     
@@ -521,6 +613,7 @@ def update_professional(
         "square_subscription_id": p.square_subscription_id
     }
     
+    # Add verification results
     if subscription_error:
         response_data["subscription_error"] = subscription_error
         response_data["subscription_created"] = False
@@ -528,7 +621,18 @@ def update_professional(
         response_data["subscription_created"] = True
         response_data["message"] = "Professional verified and subscription activated successfully"
     
+    # Add suspension results
+    if was_verified and not will_be_verified:
+        response_data["suspended"] = True
+        response_data["pairs_nullified"] = pairs_nullified
+        response_data["subscription_cancelled"] = subscription_cancelled
+        if suspension_error:
+            response_data["suspension_error"] = suspension_error
+        else:
+            response_data["message"] = f"Professional suspended successfully. Removed from {pairs_nullified} pair(s) and subscription cancelled."
+    
     return response_data
+
 
 @router.post("/{professional_id}/verify", dependencies=[Depends(role_required("admins"))])
 def verify_professional(

@@ -17,6 +17,7 @@ from sqlalchemy import func, text
 from models.service_city_pair import ServiceCityPair
 from models.state_city import StateCityPair
 from utils.email import send_email
+from utils.sms import send_sms
 
 
 logger = logging.getLogger("uvicorn")
@@ -411,16 +412,81 @@ def create_lead(
 
 
     # ---- 4) Send Email Notifications ----
-    # Subject and Body as requested
-    email_subject = "leads testing"
-    email_body = "hi this is abdullah to test leads"
+    # Prepare customer email based on timeline
+    if lead.status == "urgent":
+        customer_subject = "Your Service Request Has Been Created - Contact Now"
+        customer_body = """Dear Customer,
+
+Thank you for submitting your service request with ProTown Network!
+
+Your request has been successfully created and assigned to qualified professionals in your area.
+
+Timeline: Contact Now
+You can contact the professionals quickly, and they can also contact you directly to discuss your service needs.
+
+Service Details:
+- Service: {service_name}
+- Location: {state_name}
+
+Our professionals will be reaching out to you shortly. You can also view your request details in your customer dashboard.
+
+Best regards,
+ProTown Network Team
+""".format(
+            service_name=service_name or "N/A",
+            state_name=state_name or "N/A"
+        )
+    else:  # normal / "Get a Call Back in 48 Hours"
+        customer_subject = "Your Service Request Has Been Created"
+        customer_body = """Dear Customer,
+
+Thank you for submitting your service request with ProTown Network!
+
+Your request has been successfully created and assigned to qualified professionals in your area.
+
+Timeline: Get a Call Back in 48 Hours
+A professional will contact you within 48 hours to discuss your service needs and schedule an appointment.
+
+Service Details:
+- Service: {service_name}
+- Location: {state_name}
+
+You can view your request details in your customer dashboard at any time.
+
+Best regards,
+ProTown Network Team
+""".format(
+            service_name=service_name or "N/A",
+            state_name=state_name or "N/A"
+        )
+
+    # Professional email
+    professional_subject = "New Lead Assigned to You"
+    professional_body = """Hello,
+
+A new lead has been assigned to you through ProTown Network.
+
+Please log in to your professional dashboard to view the lead details and contact the customer.
+
+Lead Details:
+- Service: {service_name}
+- Location: {state_name}
+- Timeline: {timeline}
+
+Best regards,
+ProTown Network Team
+""".format(
+        service_name=service_name or "N/A",
+        state_name=state_name or "N/A",
+        timeline="Contact Now" if lead.status == "urgent" else "48 Hours"
+    )
 
     # Send to Customer
     if cust and cust.get("email"):
         send_email(
             to_email=cust["email"],
-            subject=email_subject,
-            body=email_body,
+            subject=customer_subject,
+            body=customer_body,
             is_html=False
         )
 
@@ -432,13 +498,44 @@ def create_lead(
         
         # Let's fetch the professional email directly here to be safe and simple
         prof_obj = db.query(Professional).filter(Professional.id == prof["id"]).first()
-        if prof_obj and prof_obj.email:
-             send_email(
-                to_email=prof_obj.email,
-                subject=email_subject,
-                body=email_body,
-                is_html=False
-            )
+        if prof_obj:
+            if prof_obj.email:
+                 send_email(
+                    to_email=prof_obj.email,
+                    subject=professional_subject,
+                    body=professional_body,
+                    is_html=False
+                )
+            
+            # Send SMS to Professional
+            if prof_obj.phone_number:
+                # Assuming phone numbers might need formatting, but passing as is for now
+                # Brevo expects international format usually, hopefully stored correctly
+                send_sms(
+                    recipient_number=prof_obj.phone_number,
+                    message="A new lead has been created for you. Check your leads."
+                )
+
+    # ---- 5) Send SMS to Customer ----
+    if cust and cust.get("phone_number"):
+        sms_message = ""
+        # Check raw status value from payload or led object
+        # The frontend sends "urgent" or "normal"
+        # lead.status stores this value
+        
+        if lead.status == "urgent":
+             sms_message = "Your lead has been created. You can contact the professionals quickly and they can also contact you."
+        elif lead.status == "normal":
+             sms_message = "Your lead has been created. The professional will contact you in 48 hours."
+        
+        # Fallback if status is something else (though validation ensures enum usually, dynamic here)
+        if not sms_message:
+            sms_message = "Your lead has been created."
+
+        send_sms(
+            recipient_number=cust["phone_number"],
+            message=sms_message
+        )
 
     return {
         "id": lead.id,
@@ -496,7 +593,7 @@ def choose_pair_for_service_city(
         .first()
     )
     if not scp:
-        raise HTTPException(status_code=400, detail="No service_city_pair for given service/city")
+        raise HTTPException(status_code=400, detail="No vendors are present at this time. Please check back soon.")
 
     # Fetch the 2 predefined pairs for this SCP
     pairs = (

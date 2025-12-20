@@ -5,7 +5,7 @@ from models.customer import Customer
 from models.state import State
 from models.city import City
 from models.state_city import StateCityPair
-from utils.deps import role_required
+from utils.deps import role_required, get_current_user
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, EmailStr
 import os
@@ -29,6 +29,11 @@ class NewsletterRequest(BaseModel):
     body: str  # HTML or plain text
     recipient_emails: Optional[List[EmailStr]] = None  # Optional: specific emails
     filters: Optional[NewsletterFilters] = None  # Optional: filter by state/city
+
+
+class SMSRequest(BaseModel):
+    recipient_number: str
+    message: str
 
 
 class NewsletterResponse(BaseModel):
@@ -104,7 +109,7 @@ def get_recipient_emails(
     return emails
 
 
-@router.post("/send", dependencies=[Depends(role_required("admins"))])
+@router.post("/send", dependencies=[Depends(get_current_user)])
 def send_newsletter(
     request: NewsletterRequest,
     db: Session = Depends(get_db)
@@ -205,3 +210,45 @@ def send_newsletter(
             errors=errors[:10]
         )
 
+@router.post("/send-sms", dependencies=[Depends(get_current_user)])
+def send_sms_endpoint(request: SMSRequest):
+    """
+    Send an SMS using Brevo's Transactional SMS API.
+    """
+    if not BREVO_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="Brevo API key is missing. Please set BREVO_API_KEY environment variable."
+        )
+
+    sender = os.getenv("BREVO_SMS_SENDER", "ProTown")
+    url = "https://api.brevo.com/v3/transactionalSMS/sms"
+
+    payload = {
+        "sender": sender,
+        "recipient": request.recipient_number,
+        "content": request.message,
+        "type": "transactional",
+    }
+
+    headers = {
+        "api-key": BREVO_API_KEY,
+        "accept": "application/json",
+        "content-type": "application/json",
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        return {"success": True, "message": "SMS sent successfully", "data": response.json()}
+
+    except requests.exceptions.RequestException as e:
+        error_detail = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+             try:
+                 error_detail = e.response.json()
+             except:
+                 pass
+        
+        logger.error(f"Error sending SMS: {error_detail}")
+        raise HTTPException(status_code=400, detail=f"Failed to send SMS: {error_detail}")

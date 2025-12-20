@@ -169,6 +169,23 @@ def signup(role: str, data: dict, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
     
+    # Send welcome email to customers after successful signup
+    if role == "customer":
+        try:
+            from utils.email import send_customer_welcome_email
+            success, error = send_customer_welcome_email(
+                customer_name=user.name or "Valued Customer",
+                customer_email=user.email
+            )
+            if success:
+                print(f"Welcome email sent successfully to {user.email}")
+            else:
+                print(f"Failed to send welcome email to {user.email}: {error}")
+        except Exception as e:
+            # Log the error but don't fail the signup
+            print(f"Error sending welcome email to {user.email}: {str(e)}")
+
+    
     access_token = create_access_token({"sub": user.email, "role": role})
     
     response = {

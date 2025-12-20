@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+
 from sqlalchemy.orm import Session
 from db.init import get_db
 from models.customer import Customer
@@ -35,3 +36,33 @@ def get_kpis(db: Session = Depends(get_db)):
         "cities_covered_display": format_kpi(cities_covered) if cities_covered > 5 else "50+",
         "satisfaction_rate": "98%"
     }
+
+
+@router.post("/contact")
+def create_contact_query(data: dict):
+    # Required fields
+    required = ["name", "email", "subject", "message"]
+    missing = [f for f in required if f not in data or not data[f]]
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required fields: {', '.join(missing)}"
+        )
+
+    # Send email
+    try:
+        from utils.email import send_contact_form_email
+        success, error = send_contact_form_email(
+            name=data["name"],
+            email=data["email"],
+            subject=data["subject"],
+            message=data["message"]
+        )
+        if success:
+            return {"message": "Your message has been sent successfully. We will get back to you shortly."}
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to send email: {error}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error sending contact form: {str(e)}")
+

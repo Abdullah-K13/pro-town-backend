@@ -183,6 +183,18 @@ def create_customer(data: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_c)
 
+    # Send welcome email
+    try:
+        from utils.email import send_customer_welcome_email
+        cust_name = f"{new_c.first_name} {new_c.last_name}"
+        success, error = send_customer_welcome_email(cust_name, new_c.email)
+        if success:
+            print(f"Welcome email sent successfully to {new_c.email}")
+        else:
+            print(f"Failed to send welcome email to {new_c.email}: {error}")
+    except Exception as e:
+        print(f"Error sending welcome email to {new_c.email}: {str(e)}")
+
     return {"message": "Customer created successfully", "access_token": access_token, "token_type": "bearer", "customer": new_c}
 
 
