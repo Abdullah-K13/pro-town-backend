@@ -558,21 +558,21 @@ def main():
 
     db = SessionLocal()
     try:
-        services = seed_services(db)
-        states = seed_states(db)
-        cities = seed_cities(db)
-        state_city_pairs = seed_state_city_pairs(db, states, cities)
-        subs = seed_subscriptions(db)
+        # services = seed_services(db)
+        # states = seed_states(db)
+        # cities = seed_cities(db)
+        # state_city_pairs = seed_state_city_pairs(db, states, cities)
+        # subs = seed_subscriptions(db)
 
         seed_admins(db, NUM_ADMINS)
         # Seed professionals before customers so customers can be assigned referrals
-        professionals = seed_professionals(db, services, states, cities, subs, NUM_PROFESSIONALS)
-        seed_customers(db, NUM_CUSTOMERS, professionals=professionals)
+        # professionals = seed_professionals(db, services, states, cities, subs, NUM_PROFESSIONALS)
+        # seed_customers(db, NUM_CUSTOMERS, professionals=professionals)
 
-        scps = seed_service_city_pairs(db, services, cities, PAIR_COVERAGE)
-        seed_professional_pairs(db, scps)
+        # scps = seed_service_city_pairs(db, services, cities, PAIR_COVERAGE)
+        # seed_professional_pairs(db, scps)
 
-        seed_leads(db, NUM_LEADS)
+        # seed_leads(db, NUM_LEADS)
 
         print("\n✅ Faker ingestion completed.")
     finally:
