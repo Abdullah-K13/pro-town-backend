@@ -210,7 +210,7 @@ def send_newsletter(
             errors=errors[:10]
         )
 
-@router.post("/send-sms", dependencies=[Depends(get_current_user)])
+@router.post("/send-sms")
 def send_sms_endpoint(request: SMSRequest):
     """
     Send an SMS using Brevo's Transactional SMS API.
