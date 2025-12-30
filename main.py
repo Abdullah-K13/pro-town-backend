@@ -39,7 +39,7 @@ def startup():
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
-    
+
 # Routers
 app.include_router(auth.router, prefix="/auth", tags=["Auth"])
 app.include_router(customer.router, prefix="/customers", tags=["Customers"])

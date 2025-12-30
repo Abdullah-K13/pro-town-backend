@@ -109,7 +109,7 @@ def get_recipient_emails(
     return emails
 
 
-@router.post("/send", dependencies=[Depends(get_current_user)])
+@router.post("/send")
 def send_newsletter(
     request: NewsletterRequest,
     db: Session = Depends(get_db)
