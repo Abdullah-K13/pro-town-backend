@@ -27,10 +27,11 @@ app = FastAPI(title="ProTown Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,          # cannot be ["*"] if allow_credentials=True
-    allow_credentials=True,         # set True if you use cookies/auth headers
-    allow_methods=["*"],            # or list specific methods ["GET","POST","OPTIONS"]
-    allow_headers=["*"],            # or list specific headers
+    # allow_origins=origins,        # Replaced with regex below
+    allow_origin_regex=".*",        # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 @app.on_event("startup")
 def startup():
