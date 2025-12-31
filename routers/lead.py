@@ -602,10 +602,8 @@ def choose_pair_for_service_city(
         .order_by(ProfessionalPair.id.asc())
         .all()
     )
-    if len(pairs) < 2:
-        raise HTTPException(status_code=400, detail="Admin must configure two pairs for this service/city")
-
-    pair_a, pair_b = pairs[0], pairs[1]
+    if not pairs:
+        raise HTTPException(status_code=400, detail="Admin must configure at least one pair for this service/city")
 
     # Optional: protect the round-robin from race conditions (Postgres only )
     if use_advisory_lock:
@@ -614,10 +612,16 @@ def choose_pair_for_service_city(
         except Exception:
             pass  # non-Postgres env: proceed without the lock
 
-    # Strict round-robin A,B,A,B based on total assigned so far
+    # Strict round-robin based on total assigned so far
+    # We round-robin across ALL available pairs, not just A/B
+    pair_ids = [p.id for p in pairs]
+    
     total_assigned = (
         db.query(func.count(Lead.id))
-        .filter(Lead.pair_id.in_([pair_a.id, pair_b.id]))
+        .filter(Lead.pair_id.in_(pair_ids))
         .scalar()
     )
-    return pair_a.id if (total_assigned % 2 == 0) else pair_b.id
+    
+    # Logic: pairs[index].id
+    index = total_assigned % len(pairs)
+    return pairs[index].id
