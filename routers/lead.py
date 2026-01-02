@@ -409,77 +409,77 @@ def create_lead(
                 ):
                     prof_list.append({"id": pid, "name": pname})
 
-
-
     # ---- 4) Send Email Notifications ----
+    from utils.email import get_email_template
+    
     # Prepare customer email based on timeline
     if lead.status == "urgent":
         customer_subject = "Your Service Request Has Been Created - Contact Now"
-        customer_body = """Dear Customer,
-
-Thank you for submitting your service request with ProTown Network!
-
-Your request has been successfully created and assigned to qualified professionals in your area.
-
-Timeline: Contact Now
-You can contact the professionals quickly, and they can also contact you directly to discuss your service needs.
-
-Service Details:
-- Service: {service_name}
-- Location: {state_name}
-
-Our professionals will be reaching out to you shortly. You can also view your request details in your customer dashboard.
-
-Best regards,
-ProTown Network Team
-""".format(
-            service_name=service_name or "N/A",
-            state_name=state_name or "N/A"
-        )
-    else:  # normal / "Get a Call Back in 48 Hours"
+        timeline_html = """
+        <div class="benefit-item"><strong>Timeline: Contact Now</strong></div>
+        <div class="message">You can contact the professionals quickly, and they can also contact you directly to discuss your service needs.</div>
+        """
+    else:  # normal
         customer_subject = "Your Service Request Has Been Created"
-        customer_body = """Dear Customer,
+        timeline_html = """
+        <div class="benefit-item"><strong>Timeline: Get a Call Back in 48 Hours</strong></div>
+        <div class="message">A professional will contact you within 48 hours to discuss your service needs and schedule an appointment.</div>
+        """
 
-Thank you for submitting your service request with ProTown Network!
+    customer_content = f"""
+        <div class="message">Dear Customer,</div>
+        <div class="message">
+            Thank you for submitting your service request with ProTown Network! 
+            Your request has been successfully created and assigned to qualified professionals in your area.
+        </div>
+        
+        <div class="benefits">
+            <h3 style="margin-top: 0; color: #667eea;">Request Details:</h3>
+            <div class="benefit-item">Service: {service_name or "N/A"}</div>
+            <div class="benefit-item">Location: {state_name or "N/A"}</div>
+            {timeline_html}
+        </div>
 
-Your request has been successfully created and assigned to qualified professionals in your area.
-
-Timeline: Get a Call Back in 48 Hours
-A professional will contact you within 48 hours to discuss your service needs and schedule an appointment.
-
-Service Details:
-- Service: {service_name}
-- Location: {state_name}
-
-You can view your request details in your customer dashboard at any time.
-
-Best regards,
-ProTown Network Team
-""".format(
-            service_name=service_name or "N/A",
-            state_name=state_name or "N/A"
-        )
+        <div class="message">
+            Our professionals will be reaching out to you shortly. You can also view your request details in your customer dashboard.
+        </div>
+        
+        <div class="message" style="margin-top: 30px;">
+            Best regards,<br>
+            <strong>The ProTown Network Team</strong>
+        </div>
+    """
+    
+    customer_body = get_email_template("Service Request Created", customer_content, is_professional=False)
 
     # Professional email
     professional_subject = "New Lead Assigned to You"
-    professional_body = """Hello,
+    timeline_str = "Contact Now" if lead.status == "urgent" else "48 Hours"
+    
+    professional_content = f"""
+        <div class="message">Hello,</div>
+        <div class="message">
+            A new lead has been assigned to you through ProTown Network.
+        </div>
+        
+        <div class="benefits">
+            <h3 style="margin-top: 0; color: #3bb2b8;">Lead Details:</h3>
+            <div class="benefit-item">Service: {service_name or "N/A"}</div>
+            <div class="benefit-item">Location: {state_name or "N/A"}</div>
+            <div class="benefit-item">Timeline: {timeline_str}</div>
+        </div>
 
-A new lead has been assigned to you through ProTown Network.
-
-Please log in to your professional dashboard to view the lead details and contact the customer.
-
-Lead Details:
-- Service: {service_name}
-- Location: {state_name}
-- Timeline: {timeline}
-
-Best regards,
-ProTown Network Team
-""".format(
-        service_name=service_name or "N/A",
-        state_name=state_name or "N/A",
-        timeline="Contact Now" if lead.status == "urgent" else "48 Hours"
-    )
+        <div class="message">
+            Please log in to your professional dashboard to view the lead details and contact the customer.
+        </div>
+        
+        <div class="message" style="margin-top: 30px;">
+            Best regards,<br>
+            <strong>The ProTown Network Team</strong>
+        </div>
+    """
+    
+    professional_body = get_email_template("New Lead Assigned", professional_content, is_professional=True)
 
     # Send to Customer
     if cust and cust.get("email"):
@@ -487,7 +487,7 @@ ProTown Network Team
             to_email=cust["email"],
             subject=customer_subject,
             body=customer_body,
-            is_html=False
+            is_html=True
         )
 
     # Send to Professionals
@@ -504,7 +504,7 @@ ProTown Network Team
                     to_email=prof_obj.email,
                     subject=professional_subject,
                     body=professional_body,
-                    is_html=False
+                    is_html=True
                 )
             
             # Send SMS to Professional
@@ -524,9 +524,9 @@ ProTown Network Team
         # lead.status stores this value
         
         if lead.status == "urgent":
-             sms_message = "Your lead has been created. You can contact the professionals quickly and they can also contact you."
+             sms_message = "Your ProTown request is active! You can contact professionals immediately, or wait for them to reach out to you."
         elif lead.status == "normal":
-             sms_message = "Your lead has been created. The professional will contact you in 48 hours."
+             sms_message = "Your ProTown request is active! Professionals will review your needs and contact you within 48 hours."
         
         # Fallback if status is something else (though validation ensures enum usually, dynamic here)
         if not sms_message:

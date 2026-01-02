@@ -184,6 +184,21 @@ def signup(role: str, data: dict, db: Session = Depends(get_db)):
         except Exception as e:
             # Log the error but don't fail the signup
             print(f"Error sending welcome email to {user.email}: {str(e)}")
+            
+    # Send welcome email to professionals after successful signup
+    if role == "professional":
+        try:
+            from utils.email import send_professional_welcome_email
+            success, error = send_professional_welcome_email(
+                professional_name=user.name or "Service Professional",
+                professional_email=user.email
+            )
+            if success:
+                print(f"Welcome email sent successfully to {user.email}")
+            else:
+                print(f"Failed to send welcome email to {user.email}: {error}")
+        except Exception as e:
+            print(f"Error sending welcome email to {user.email}: {str(e)}")
 
     
     access_token = create_access_token({"sub": user.email, "role": role})

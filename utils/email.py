@@ -80,15 +80,24 @@ def send_email(
         return False, error_msg
 
 
-def send_customer_welcome_email(customer_name: str, customer_email: str) -> tuple[bool, Optional[str]]:
+
+def get_email_template(title_text: str, content_html: str, is_professional: bool = False) -> str:
     """
-    Send a welcome email to a newly registered customer.
-    Returns (success: bool, error_message: Optional[str])
+    Generates a full HTML email using the standard ProTown design.
     """
-    subject = "Welcome to ProTown Network! 🎉"
-    
-    # Create a professional HTML email body
-    html_body = f"""
+    # Theme colors
+    if is_professional:
+        # Green theme for professionals
+        header_bg = "linear-gradient(135deg, #42e695 0%, #3bb2b8 100%)"
+        accent_color = "#3bb2b8" # Teal/Greenish
+        button_color = "#3bb2b8"
+    else:
+        # Blue/Purple theme for customers (from user snippet)
+        header_bg = "linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
+        accent_color = "#667eea"
+        button_color = "#667eea"
+
+    return f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -102,7 +111,7 @@ def send_customer_welcome_email(customer_name: str, customer_email: str) -> tupl
                 padding: 20px;
             }}
             .header {{
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                background: {header_bg};
                 color: white;
                 padding: 30px;
                 text-align: center;
@@ -137,7 +146,7 @@ def send_customer_welcome_email(customer_name: str, customer_email: str) -> tupl
                 content: "✓";
                 position: absolute;
                 left: 0;
-                color: #667eea;
+                color: {accent_color};
                 font-weight: bold;
             }}
             .footer {{
@@ -148,20 +157,39 @@ def send_customer_welcome_email(customer_name: str, customer_email: str) -> tupl
             }}
             .cta-button {{
                 display: inline-block;
-                background: #667eea;
+                background: {button_color};
                 color: white;
                 padding: 12px 30px;
                 text-decoration: none;
                 border-radius: 5px;
                 margin: 20px 0;
             }}
+            /* Specific for contact form or generic sections */
+            .label {{ font-weight: bold; color: {accent_color}; }}
+            .message-box {{ background-color: #f9f9f9; padding: 15px; border-radius: 5px; border-left: 4px solid {accent_color}; margin-top: 10px; whitespace: pre-wrap; }}
         </style>
     </head>
     <body>
         <div class="header">
-            <h1 style="margin: 0;">ProTown Network</h1>
+            <h1 style="margin: 0;">{title_text}</h1>
         </div>
         <div class="content">
+            {content_html}
+        </div>
+        <div class="footer">
+            <p>© 2025 ProTown Network. All rights reserved.</p>
+        </div>
+    </body>
+    </html>
+    """
+
+def send_customer_welcome_email(customer_name: str, customer_email: str) -> tuple[bool, Optional[str]]:
+    """
+    Send a welcome email to a newly registered customer (Blue Theme).
+    """
+    subject = "Welcome to ProTown Network! 🎉"
+    
+    content = f"""
             <div class="welcome-text">Welcome, {customer_name}! 👋</div>
             <div class="message">
                 Thank you for joining ProTown Network! We're thrilled to have you as part of our community.
@@ -188,18 +216,49 @@ def send_customer_welcome_email(customer_name: str, customer_email: str) -> tupl
                 Best regards,<br>
                 <strong>The ProTown Network Team</strong>
             </div>
-        </div>
-        <div class="footer">
-            <p>© 2025 ProTown Network. All rights reserved.</p>
-            <p>You're receiving this email because you signed up for ProTown Network.</p>
-        </div>
-    </body>
-    </html>
     """
+    
+    html_body = get_email_template("ProTown Network", content, is_professional=False)
     
     return send_email(customer_email, subject, html_body, is_html=True)
 
 
+def send_professional_welcome_email(professional_name: str, professional_email: str) -> tuple[bool, Optional[str]]:
+    """
+    Send a welcome email to a newly registered professional (Green Theme).
+    """
+    subject = "Welcome to ProTown Network! 🚀"
+    
+    content = f"""
+            <div class="welcome-text">Welcome, {professional_name}! 👋</div>
+            <div class="message">
+                Thank you for joining ProTown Network! We're excited to help you grow your business.
+            </div>
+            <div class="message">
+                ProTown Network connects you with customers in your area who need your specific skills and services.
+            </div>
+            <div class="benefits">
+                <h3 style="margin-top: 0; color: #3bb2b8;">What You Can Do:</h3>
+                <div class="benefit-item">Receive leads directly from customers</div>
+                <div class="benefit-item">Manage your profile and services</div>
+                <div class="benefit-item">Build your reputation with customer reviews</div>
+                <div class="benefit-item">Grow your client base effortlessly</div>
+            </div>
+            <div class="message">
+                Your account is currently under review. We will notify you once your profile is verified and active.
+            </div>
+            <div class="message">
+                If you have any questions, our support team is ready to assist you.
+            </div>
+            <div class="message" style="margin-top: 30px;">
+                Best regards,<br>
+                <strong>The ProTown Network Team</strong>
+            </div>
+    """
+    
+    html_body = get_email_template("ProTown Network", content, is_professional=True)
+    
+    return send_email(professional_email, subject, html_body, is_html=True)
 
 
 def send_contact_form_email(name: str, email: str, subject: str, message: str) -> tuple[bool, Optional[str]]:
@@ -209,43 +268,25 @@ def send_contact_form_email(name: str, email: str, subject: str, message: str) -
     to_email = "support@protownnetwork.com"
     email_subject = f"Contact Us Query: {subject}"
     
-    html_body = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eee; border-radius: 10px; }}
-            .header {{ background-color: #f8f9fa; padding: 10px 20px; border-bottom: 2px solid #667eea; border-radius: 10px 10px 0 0; }}
-            .content {{ padding: 20px; }}
-            .label {{ font-weight: bold; color: #667eea; }}
-            .field {{ margin-bottom: 15px; }}
-            .message-box {{ background-color: #f9f9f9; padding: 15px; border-radius: 5px; border-left: 4px solid #667eea; margin-top: 10px; whitespace: pre-wrap; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
+    content = f"""
                 <h2 style="margin: 0; color: #333;">New Contact Form Submission</h2>
-            </div>
-            <div class="content">
-                <div class="field">
-                    <span class="label">From:</span> {name} ({email})
-                </div>
-                <div class="field">
-                    <span class="label">Subject:</span> {subject}
-                </div>
-                <div class="field">
-                    <span class="label">Message:</span>
-                    <div class="message-box">
-                        {message}
+                <div style="margin-top: 20px;">
+                    <div class="field">
+                        <span class="label">From:</span> {name} ({email})
+                    </div>
+                    <div class="field">
+                        <span class="label">Subject:</span> {subject}
+                    </div>
+                    <div class="field">
+                        <span class="label">Message:</span>
+                        <div class="message-box">
+                            {message}
+                        </div>
                     </div>
                 </div>
-            </div>
-        </div>
-    </body>
-    </html>
     """
+    # Internal email, can use default (Blue) or maybe Blue is fine.
+    html_body = get_email_template("ProTown Admin", content, is_professional=False)
     
     # Set reply-to so hitting reply goes to the user
     reply_to = {"email": email, "name": name}
